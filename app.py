@@ -45,25 +45,28 @@ try:
     openai.api_key = st.secrets["OPENAI_API_KEY"]
     MODEL_NAME = st.secrets["MODEL"]
     if not openai.api_key:
-        raise ValueError("OpenAI API key not configured in secrets.toml")
+        raise ValueError("OPENAI_API_KEY not configured in Streamlit secrets")
     if not MODEL_NAME:
-        raise ValueError("Model name not configured in secrets.toml")
+        raise ValueError("MODEL not configured in Streamlit secrets")
 except (KeyError, ValueError) as e:
     error_msg = str(e)
     logger.error(f"Configuration error: {error_msg}")
     st.error(f"""
-    Configuration Error: {error_msg}
+    Configuration Error: Missing required secrets.
     
-    Please ensure you have:
-    1. Created .streamlit/secrets.toml
-    2. Added your OpenAI API key
-    3. Specified the model name
+    Please ensure you have configured in Streamlit Cloud:
+    1. OPENAI_API_KEY
+    2. MODEL (should be "gpt-4o-mini")
     
-    Example secrets.toml:
+    Go to your app settings in Streamlit Cloud:
+    1. Click on "Settings" ⚙️
+    2. Select "Secrets"
+    3. Add these secrets:
     ```toml
-    MODEL="gpt-4o-mini"
-    OPENAI_API_KEY="your-openai-api-key"
+    MODEL = "gpt-4o-mini"
+    OPENAI_API_KEY = "your-openai-api-key"
     ```
+    Note: Do not include any section headers like [openai] in the secrets.
     """)
     st.stop()
 
