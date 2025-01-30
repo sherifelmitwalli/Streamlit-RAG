@@ -105,7 +105,7 @@ st.sidebar.header("About")
 st.sidebar.info("This app uses AI-assisted Retrieval-Augmented Generation (RAG) to answer questions based on uploaded files.")
 st.sidebar.markdown("[View Documentation](https://example.com)")
 
-st.title("Agentic RAG Chatbot with GPT-4o-mini")
+st.title("Agentic RAG Chatbot")
 st.subheader("Upload a file and ask questions based on its content.")
 
 def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[str]:
