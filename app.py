@@ -42,10 +42,10 @@ TOP_K = 3  # Number of top relevant contexts to retrieve
 
 # Load secrets with enhanced error handling
 try:
-    openai.api_key = st.secrets["openai"]["OPENAI_API_KEY"]
-    MODEL_NAME = st.secrets["openai"]["MODEL"]
-    if not openai.api_key or openai.api_key == "your-openai-api-key-here":
-        raise ValueError("OpenAI API key not configured. Please set your API key in .streamlit/secrets.toml")
+    openai.api_key = st.secrets["OPENAI_API_KEY"]
+    MODEL_NAME = st.secrets["MODEL"]
+    if not openai.api_key:
+        raise ValueError("OpenAI API key not configured in secrets.toml")
     if not MODEL_NAME:
         raise ValueError("Model name not configured in secrets.toml")
 except (KeyError, ValueError) as e:
@@ -61,9 +61,8 @@ except (KeyError, ValueError) as e:
     
     Example secrets.toml:
     ```toml
-    [openai]
-    OPENAI_API_KEY = "your-actual-api-key"
-    MODEL = "gpt-3.5-turbo"
+    MODEL="gpt-4o-mini"
+    OPENAI_API_KEY="your-openai-api-key"
     ```
     """)
     st.stop()
@@ -96,7 +95,7 @@ st.sidebar.header("About")
 st.sidebar.info("This app uses AI-assisted Retrieval-Augmented Generation (RAG) to answer questions based on uploaded files.")
 st.sidebar.markdown("[View Documentation](https://example.com)")
 
-st.title("Agentic RAG Chatbot with GPT-4")
+st.title("Agentic RAG Chatbot with GPT-4o-mini")
 st.subheader("Upload a file and ask questions based on its content.")
 
 def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[str]:
