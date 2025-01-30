@@ -1,7 +1,7 @@
-streamlit==1.27.0  # Streamlit version compatible with Community Cloud <button class="citation-flag" data-index="5">
-openai==1.1.1      # OpenAI library for embeddings and chat completions
-PyPDF2==3.0.1      # For PDF text extraction
-pandas==2.0.3      # For CSV file processing
-numpy==1.24.3      # For numerical operations (e.g., cosine similarity)
-python-pptx==0.6.21  # For PowerPoint file processing
-scikit-learn==1.3.0  # For cosine similarity calculations
+streamlit>=1.27.0,<2.0.0        # Streamlit for the web application interface
+openai>=1.1.1,<2.0.0            # OpenAI library for embeddings and chat completions
+PyPDF2>=3.0.1,<4.0.0            # For PDF text extraction
+pandas>=2.0.3,<3.0.0            # For CSV file processing
+numpy>=1.24.3,<2.0.0            # For numerical operations (e.g., cosine similarity)
+python-pptx>=0.6.21,<0.7.0       # For PowerPoint file processing
+scikit-learn>=1.3.0,<2.0.0      # For cosine similarity calculations
