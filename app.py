@@ -73,40 +73,58 @@ st.sidebar.markdown("[View Documentation](https://example.com)")
 st.title("Agentic RAG Chatbot with GPT-4")
 st.subheader("Upload a file and ask questions based on its content.")
 
-def process_file(file: BytesIO) -> Optional[str]:
+def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[str]:
     """
     Process uploaded file and extract text content.
     
     Args:
-        file (BytesIO): Uploaded file object
+        uploaded_file: Streamlit UploadedFile object
         
     Returns:
         Optional[str]: Extracted text content or None if processing fails
     """
     try:
-        if file.type == "text/plain":
-            return file.read().decode("utf-8")
-        elif file.type == "application/pdf":
-            reader = PyPDF2.PdfReader(file)
+        # Create a BytesIO object from the uploaded file's bytes
+        file_bytes = BytesIO(uploaded_file.read())
+        
+        if uploaded_file.type == "text/plain":
+            # Reset pointer for text files
+            file_bytes.seek(0)
+            return file_bytes.read().decode("utf-8")
+            
+        elif uploaded_file.type == "application/pdf":
+            # Reset pointer for PDF
+            file_bytes.seek(0)
+            reader = PyPDF2.PdfReader(file_bytes)
             text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
             return text
-        elif file.type == "text/csv":
-            df = pd.read_csv(file)
+            
+        elif uploaded_file.type == "text/csv":
+            # Reset pointer for CSV
+            file_bytes.seek(0)
+            df = pd.read_csv(file_bytes)
             return df.to_string()
-        elif file.type == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-            presentation = Presentation(file)
+            
+        elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+            # Reset pointer for PPTX
+            file_bytes.seek(0)
+            presentation = Presentation(file_bytes)
             text = "\n".join(
                 shape.text for slide in presentation.slides 
                 for shape in slide.shapes if hasattr(shape, "text")
             )
             return text
+            
         else:
-            st.error("Unsupported file type. Please upload a .txt, .pdf, .csv, or .pptx file.")
+            st.error(f"Unsupported file type: {uploaded_file.type}. Please upload a .txt, .pdf, .csv, or .pptx file.")
             return None
     except Exception as e:
-        logger.error(f"Error processing file: {e}", exc_info=True)
-        st.error("An error occurred while processing the file. Please try a different file or contact support.")
+        logger.error(f"Error processing file {uploaded_file.name}: {str(e)}", exc_info=True)
+        st.error(f"Error processing file {uploaded_file.name}. Error: {str(e)}")
         return None
+    finally:
+        # Clean up
+        file_bytes.close()
 
 @st.cache_data(show_spinner=False, ttl=3600)  # Cache for 1 hour
 def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
