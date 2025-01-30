@@ -1,0 +1,3 @@
+libgl1-mesa-glx  # Fixes some display issues on Linux
+poppler-utils  # Required for better PDF extraction (optional)
+tesseract-ocr  # Required for OCR (optional)
