@@ -72,8 +72,15 @@ except (KeyError, ValueError) as e:
 
 # Validate API key by making a test request
 try:
-    openai.Model.list()
-    logger.info("Successfully connected to OpenAI API")
+    # Simple API test using embeddings endpoint
+    response = openai.Embedding.create(
+        input="test",
+        model=EMBEDDING_MODEL
+    )
+    if response and response.get('data'):
+        logger.info("Successfully connected to OpenAI API")
+    else:
+        raise ValueError("Invalid API response")
 except Exception as e:
     error_msg = f"Failed to connect to OpenAI API: {str(e)}"
     logger.error(error_msg)
@@ -359,5 +366,4 @@ if prompt := st.chat_input("Ask a question about the uploaded file:"):
                         st.markdown(bot_response)
     else:
         st.warning("Please upload a file and wait for embeddings to be generated before asking questions.")
-
 
