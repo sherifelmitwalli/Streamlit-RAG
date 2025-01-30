@@ -1,3 +1,4 @@
-libgl1-mesa-glx  # Fixes some display issues on Linux
-poppler-utils  # Required for better PDF extraction (optional)
-tesseract-ocr  # Required for OCR (optional)
+libgl1-mesa-glx  # Fixes display issues on Linux systems <button class="citation-flag" data-index="6">
+poppler-utils    # Required for better PDF extraction <button class="citation-flag" data-index="6">
+tesseract-ocr   
+libwebkit2gtk-4.0-dev  # Fixes potential rendering issues in some environments <button class="citation-flag" data-index="6">
