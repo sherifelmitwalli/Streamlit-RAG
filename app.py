@@ -42,195 +42,6 @@ TOP_K = 3  # Number of top relevant contexts to retrieve
 
 # Load secrets with enhanced error handling
 try:
-    openai.api_key = st.secrets["OPENAI_API_KEY"]
-    MODEL_NAME = st.secrets["MODEL"]
-    if not openai.api_key or not MODEL_NAME:
-        raise ValueError("API key or model name cannot be empty")
-except (KeyError, ValueError) as e:
-    error_msg = "Missing or invalid configuration. Please check your secrets.toml file."
-    logger.error(f"{error_msg} Details: {str(e)}")
-    st.error(error_msg)
-    st.stop()
-
-# Custom styling
-st.markdown("""
-<style>
-div.stButton > button:first-child {
-    background-color: #4CAF50;
-    color: white;
-    font-size: 16px;
-    padding: 10px 24px;
-    border-radius: 8px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# Application information
-st.sidebar.header("About")
-st.sidebar.info("This app uses AI-assisted Retrieval-Augmented Generation (RAG) to answer questions based on uploaded files.")
-st.sidebar.markdown("[View Documentation](https://example.com)")
-
-st.title("Agentic RAG Chatbot with GPT-4")
-st.subheader("Upload a file and ask questions based on its content.")
-
-def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[str]:
-    """
-    Process uploaded file and extract text content.
-    
-    Args:
-        uploaded_file: Streamlit UploadedFile object
-        
-    Returns:
-        Optional[str]: Extracted text content or None if processing fails
-    """
-    try:
-        # Create a BytesIO object from the uploaded file's bytes
-        file_bytes = BytesIO(uploaded_file.read())
-        
-        if uploaded_file.type == "text/plain":
-            # Reset pointer for text files
-            file_bytes.seek(0)
-            return file_bytes.read().decode("utf-8")
-            
-        elif uploaded_file.type == "application/pdf":
-            # Reset pointer for PDF
-            file_bytes.seek(0)
-            reader = PyPDF2.PdfReader(file_bytes)
-            text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
-            return text
-            
-        elif uploaded_file.type == "text/csv":
-            # Reset pointer for CSV
-            file_bytes.seek(0)
-            df = pd.read_csv(file_bytes)
-            return df.to_string()
-            
-        elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-            # Reset pointer for PPTX
-            file_bytes.seek(0)
-            presentation = Presentation(file_bytes)
-            text = "\n".join(
-                shape.text for slide in presentation.slides 
-                for shape in slide.shapes if hasattr(shape, "text")
-            )
-            return text
-            
-        else:
-            st.error(f"Unsupported file type: {uploaded_file.type}. Please upload a .txt, .pdf, .csv, or .pptx file.")
-            return None
-    except Exception as e:
-        logger.error(f"Error processing file {uploaded_file.name}: {str(e)}", exc_info=True)
-        st.error(f"Error processing file {uploaded_file.name}. Error: {str(e)}")
-        return None
-    finally:
-        # Clean up
-        file_bytes.close()
-
-@st.cache_data(show_spinner=False, ttl=3600)  # Cache for 1 hour
-def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
-    """
-    Generate embeddings for text chunks using OpenAI's API.
-    
-    Args:
-        text_chunks (List[str]): List of text segments to embed
-        
-    Returns:
-        np.ndarray: Array of embeddings or empty array if generation fails
-    """
-    try:
-        response = openai.Embedding.create(
-            input=text_chunks,
-            model=EMBEDDING_MODEL
-        )
-        embeddings = [data['embedding'] for data in response['data']]
-        return np.array(embeddings)
-    except Exception as e:
-        logger.error(f"Error generating embeddings: {e}", exc_info=True)
-        st.error("Failed to generate embeddings. Please try again later.")
-        return np.array([])
-
-def find_relevant_context(
-    query: str,
-    text_chunks: List[str],
-    embeddings: np.ndarray,
-    top_k: int = TOP_K
-) -> List[str]:
-    """
-    Find most relevant context for a query using cosine similarity.
-    
-    Args:
-        query (str): User's question
-        text_chunks (List[str]): Available text segments
-        embeddings (np.ndarray): Pre-computed embeddings
-        top_k (int): Number of relevant chunks to retrieve
-        
-    Returns:
-        List[str]: Most relevant text chunks
-    """
-    try:
-        response = openai.Embedding.create(
-            input=[query],
-            model=EMBEDDING_MODEL
-        )
-        query_embedding = np.array(response['data'][0]['embedding']).reshape(1, -1)
-        similarities = cosine_similarity(query_embedding, embeddings)[0]
-        top_indices = similarities.argsort()[-top_k:][::-1]
-        return [text_chunks[idx] for idx in top_indices]
-    except Exception as e:
-        logger.error(f"Error finding relevant context: {e}", exc_info=True)
-        st.error("Failed to retrieve relevant context. Please try again later.")
-        return []
-
-def get_chat_response(
-    messages: List[Dict[str, str]],
-    retries: int = MAX_RETRIES,
-    delay: int = RETRY_DELAY
-) -> Optional[str]:
-    """
-    Get response from chat model with retry mechanism.import streamlit as st
-import os
-import logging
-import time
-from io import BytesIO
-from typing import List, Optional, Dict, Any
-
-import PyPDF2
-import pandas as pd
-import numpy as np
-from pptx import Presentation
-from sklearn.metrics.pairwise import cosine_similarity
-import openai
-
-# Initialize logging with more detailed formatting and file output
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("app.log", mode="a")
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# Memory management
-def clear_cache() -> None:
-    """Clear all Streamlit cache to free up memory."""
-    try:
-        st.cache_data.clear()
-        logger.info("Cache cleared successfully")
-    except Exception as e:
-        logger.error(f"Error clearing cache: {e}")
-
-# Constants
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
-CHUNK_SIZE = 500  # Size of text chunks for processing
-MAX_RETRIES = 3  # Maximum number of API call retries
-RETRY_DELAY = 5  # Delay between retries in seconds
-EMBEDDING_MODEL = "text-embedding-ada-002"
-TOP_K = 3  # Number of top relevant contexts to retrieve
-
-# Load secrets with enhanced error handling
-try:
     openai.api_key = st.secrets["openai"]["OPENAI_API_KEY"]
     MODEL_NAME = st.secrets["openai"]["MODEL"]
     if not openai.api_key or openai.api_key == "your-openai-api-key-here":
@@ -268,7 +79,7 @@ except Exception as e:
     st.stop()
 
 # Custom styling
-st.markdown("""
+st.markdown('''
 <style>
 div.stButton > button:first-child {
     background-color: #4CAF50;
@@ -278,7 +89,7 @@ div.stButton > button:first-child {
     border-radius: 8px;
 }
 </style>
-""", unsafe_allow_html=True)
+''', unsafe_allow_html=True)
 
 # Application information
 st.sidebar.header("About")
