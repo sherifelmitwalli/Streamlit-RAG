@@ -1,2 +1,4 @@
 libgl1-mesa-glx
 poppler-utils
+python3-dev
+build-essential
