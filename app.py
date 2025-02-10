@@ -27,7 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
-CHUNK_SIZE = 500                  # Size of text chunks for processing
+CHUNK_SIZE = 500                  # Maximum characters per text chunk
 MAX_RETRIES = 3                   # Maximum number of API call retries
 RETRY_DELAY = 5                   # Delay between retries in seconds
 EMBEDDING_MODEL = "text-embedding-ada-002"
@@ -100,21 +100,58 @@ def clear_cache() -> None:
 # -----------------------------
 # File Processing Functions
 # -----------------------------
-def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[str]:
+def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any]]:
+    """
+    Process a JSON file that is structured as a dictionary with keys like 'page_1', 'page_2', etc.
+    Returns a list of chunks with metadata.
+    """
+    try:
+        file_bytes.seek(0)
+        data = json.load(file_bytes)
+        chunks = []
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if key.lower().startswith("page_"):
+                    page_num = key.split("_")[-1]
+                    chunk_text = f"File: {file_name} | Page: {page_num}\n{value}"
+                    chunks.append({"text": chunk_text, "source": {"file": file_name, "page": page_num}})
+                else:
+                    chunk_text = f"File: {file_name} | {key}\n{value}"
+                    chunks.append({"text": chunk_text, "source": {"file": file_name}})
+        else:
+            chunk_text = f"File: {file_name}\n{json.dumps(data, indent=2)}"
+            chunks.append({"text": chunk_text, "source": {"file": file_name}})
+        return chunks
+    except Exception as e:
+        logger.error(f"Error processing JSON file {file_name}: {str(e)}", exc_info=True)
+        st.error(f"Error processing JSON file {file_name}. Error: {str(e)}")
+        return []
+
+def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    Processes the file bytes and returns a list of chunk dictionaries.
+    Each dictionary contains 'text' and 'source' metadata.
+    """
     ext = file_name.split('.')[-1].lower()
     try:
         if ext == "txt":
             file_bytes.seek(0)
-            return file_bytes.read().decode("utf-8")
+            text = file_bytes.read().decode("utf-8")
+            return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
         elif ext == "pdf":
             file_bytes.seek(0)
             reader = PyPDF2.PdfReader(file_bytes)
-            text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
-            return text
+            chunks = []
+            for i, page in enumerate(reader.pages):
+                page_text = page.extract_text()
+                if page_text:
+                    chunks.append({"text": f"File: {file_name} | Page: {i+1}\n{page_text}", "source": {"file": file_name, "page": i+1}})
+            return chunks
         elif ext == "csv":
             file_bytes.seek(0)
             df = pd.read_csv(file_bytes)
-            return df.to_string()
+            text = df.to_string()
+            return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
         elif ext == "pptx":
             file_bytes.seek(0)
             presentation = Presentation(file_bytes)
@@ -122,11 +159,9 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[str]:
                 shape.text for slide in presentation.slides 
                 for shape in slide.shapes if hasattr(shape, "text")
             )
-            return text
+            return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
         elif ext == "json":
-            file_bytes.seek(0)
-            data = json.load(file_bytes)
-            return json.dumps(data, indent=2)
+            return process_json_file(file_bytes, file_name)
         else:
             st.error(f"Unsupported file extension: {ext} for file {file_name}")
             return None
@@ -135,7 +170,10 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[str]:
         st.error(f"Error processing file {file_name}. Error: {str(e)}")
         return None
 
-def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[str]:
+def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[List[Dict[str, Any]]]:
+    """
+    Wraps process_file_bytes to read the uploaded file and returns a list of chunk dictionaries.
+    """
     try:
         file_bytes = BytesIO(uploaded_file.read())
         return process_file_bytes(file_bytes, uploaded_file.name)
@@ -238,9 +276,10 @@ uploaded_files = st.file_uploader(
 
 # Process files only if new files are uploaded and embeddings have not been generated yet.
 if uploaded_files and "embeddings" not in st.session_state:
-    if "combined_text" not in st.session_state:
-        st.session_state.combined_text = ""
-
+    # Use a list to store all text chunks with metadata.
+    if "chunks" not in st.session_state:
+        st.session_state.chunks = []
+    
     for uploaded_file in uploaded_files:
         if uploaded_file.size > MAX_FILE_SIZE:
             st.error(f"File {uploaded_file.name} exceeds the size limit of {MAX_FILE_SIZE / (1024 * 1024):.1f} MB.")
@@ -256,9 +295,10 @@ if uploaded_files and "embeddings" not in st.session_state:
                                 if ext in ["txt", "pdf", "csv", "pptx", "json"]:
                                     file_content = zip_ref.read(zip_info.filename)
                                     file_bytes = BytesIO(file_content)
-                                    text = process_file_bytes(file_bytes, zip_info.filename)
-                                    if text:
-                                        st.session_state.combined_text += "\n\n" + text
+                                    chunks = process_file_bytes(file_bytes, zip_info.filename)
+                                    if chunks:
+                                        for chunk in chunks:
+                                            st.session_state.chunks.append(chunk)
                                         st.success(f"Processed file from folder: {zip_info.filename}")
                                 else:
                                     st.warning(f"Skipping unsupported file {zip_info.filename} in the ZIP.")
@@ -266,33 +306,33 @@ if uploaded_files and "embeddings" not in st.session_state:
                     st.error(f"Failed to extract ZIP file {uploaded_file.name}: {str(e)}")
         else:
             with st.spinner(f"Processing file {uploaded_file.name}..."):
-                file_text = process_file(uploaded_file)
-                if file_text:
-                    st.session_state.combined_text += "\n\n" + file_text
+                chunks = process_file(uploaded_file)
+                if chunks:
+                    for chunk in chunks:
+                        st.session_state.chunks.append(chunk)
                     st.success(f"Processed file: {uploaded_file.name}")
 
-    # Only proceed if there is accumulated text.
-    if st.session_state.combined_text:
-        # Clear any previous embedding-related session state.
-        if 'embeddings' in st.session_state:
-            del st.session_state.embeddings
-        if 'text_chunks' in st.session_state:
-            del st.session_state.text_chunks
-        clear_cache()
+    # Optional: Further split any large chunk (if its text exceeds CHUNK_SIZE) into sub-chunks.
+    final_chunks = []
+    for chunk in st.session_state.chunks:
+        text = chunk["text"]
+        if len(text) > CHUNK_SIZE:
+            for i in range(0, len(text), CHUNK_SIZE):
+                sub_text = text[i:i+CHUNK_SIZE]
+                final_chunks.append({"text": sub_text, "source": chunk["source"]})
+        else:
+            final_chunks.append(chunk)
+    st.session_state.chunks = final_chunks
 
-        # Create text chunks.
-        text_chunks = [st.session_state.combined_text[i:i+CHUNK_SIZE] 
-                       for i in range(0, len(st.session_state.combined_text), CHUNK_SIZE)]
-        st.session_state.text_chunks = text_chunks
-
-        # Generate embeddings.
-        with st.spinner("Generating embeddings..."):
-            embeddings = generate_embeddings(text_chunks)
-            if embeddings.size > 0:
-                st.session_state.embeddings = embeddings
-                st.success("Embeddings generated successfully!")
-            else:
-                st.error("Failed to generate embeddings. Please try again.")
+    # Generate embeddings using the text from chunks.
+    text_for_embedding = [chunk["text"] for chunk in st.session_state.chunks]
+    with st.spinner("Generating embeddings..."):
+        embeddings = generate_embeddings(text_for_embedding)
+        if embeddings.size > 0:
+            st.session_state.embeddings = embeddings
+            st.success("Embeddings generated successfully!")
+        else:
+            st.error("Failed to generate embeddings. Please try again.")
 
 # -----------------------------
 # Chat Interface
@@ -309,11 +349,11 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    if "embeddings" in st.session_state and "text_chunks" in st.session_state:
+    if "embeddings" in st.session_state and "chunks" in st.session_state:
         with st.spinner("Retrieving relevant context..."):
             relevant_contexts = find_relevant_context(
                 prompt,
-                st.session_state.text_chunks,
+                [chunk["text"] for chunk in st.session_state.chunks],
                 st.session_state.embeddings
             )
         if relevant_contexts:
@@ -330,4 +370,3 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                         st.markdown(bot_response)
     else:
         st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
-
