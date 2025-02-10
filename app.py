@@ -248,7 +248,10 @@ def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
         st.error(f"Failed to generate embeddings: {str(e)}")
         return np.array([])
 
-def find_relevant_context(query: str, text_chunks: List[str], embeddings: np.ndarray, top_k: int = TOP_K) -> List[str]:
+def find_relevant_context_indices(query: str, text_chunks: List[str], embeddings: np.ndarray, top_k: int = TOP_K) -> List[int]:
+    """
+    Returns the indices of the top_k text_chunks that are most similar to the query.
+    """
     try:
         response = openai.Embedding.create(
             input=[query],
@@ -257,7 +260,7 @@ def find_relevant_context(query: str, text_chunks: List[str], embeddings: np.nda
         query_embedding = np.array(response['data'][0]['embedding']).reshape(1, -1)
         similarities = cosine_similarity(query_embedding, embeddings)[0]
         top_indices = similarities.argsort()[-top_k:][::-1]
-        return [text_chunks[idx] for idx in top_indices]
+        return list(top_indices)
     except Exception as e:
         logger.error(f"Error finding relevant context: {e}", exc_info=True)
         st.error("Failed to retrieve relevant context. Please try again later.")
@@ -364,44 +367,58 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
         st.markdown(prompt)
 
     if "embeddings" in st.session_state and "chunks" in st.session_state:
-        # Attempt to extract a file identifier from the query, e.g. "file JA452-197"
+        # If the query mentions a file identifier, filter the chunks accordingly.
         file_match = re.search(r'file\s+([A-Za-z0-9\-]+)', prompt, re.IGNORECASE)
         if file_match:
             file_id = file_match.group(1)
-            # Filter for chunks whose metadata 'file' value contains the identifier
             filtered_indices = [
                 i for i, chunk in enumerate(st.session_state.chunks)
                 if file_id.lower() in chunk["source"].get("file", "").lower()
             ]
             if filtered_indices:
-                filtered_text_chunks = [st.session_state.chunks[i]["text"] for i in filtered_indices]
+                filtered_chunks = [st.session_state.chunks[i] for i in filtered_indices]
+                filtered_text_chunks = [chunk["text"] for chunk in filtered_chunks]
                 filtered_embeddings = st.session_state.embeddings[filtered_indices]
             else:
-                # Fall back to all chunks if no matching file is found
+                filtered_chunks = st.session_state.chunks
                 filtered_text_chunks = [chunk["text"] for chunk in st.session_state.chunks]
                 filtered_embeddings = st.session_state.embeddings
         else:
+            filtered_chunks = st.session_state.chunks
             filtered_text_chunks = [chunk["text"] for chunk in st.session_state.chunks]
             filtered_embeddings = st.session_state.embeddings
 
         with st.spinner("Retrieving relevant context..."):
-            relevant_contexts = find_relevant_context(
-                prompt,
-                filtered_text_chunks,
-                filtered_embeddings
-            )
-        if relevant_contexts:
-            combined_context = "\n\n".join(relevant_contexts)
-            with st.spinner("Generating response..."):
-                messages = [
-                    {"role": "system", "content": "You are a helpful assistant. Provide accurate and concise answers based on the given context."},
-                    {"role": "user", "content": f"Context: {combined_context}\n\nQuestion: {prompt}"}
-                ]
-                bot_response = get_chat_response(messages)
-                if bot_response:
-                    st.session_state.messages.append({"role": "assistant", "content": bot_response})
-                    with st.chat_message("assistant"):
-                        st.markdown(bot_response)
+            top_indices = find_relevant_context_indices(prompt, filtered_text_chunks, filtered_embeddings)
+        # Retrieve the corresponding chunks (with metadata) using the indices.
+        relevant_chunks = [filtered_chunks[i] for i in top_indices]
+        # Build a combined context string that explicitly includes reference info.
+        formatted_contexts = []
+        for chunk in relevant_chunks:
+            file_ref = chunk["source"].get("file", "unknown file")
+            page_ref = chunk["source"].get("page")
+            if page_ref:
+                ref_str = f"File: {file_ref} | Page: {page_ref}"
+            else:
+                ref_str = f"File: {file_ref}"
+            # Include the reference (even if it is already in the text) to be explicit.
+            formatted_context = f"{ref_str}\n{chunk['text']}"
+            formatted_contexts.append(formatted_context)
+        combined_context = "\n\n".join(formatted_contexts)
+
+        with st.spinner("Generating response..."):
+            messages = [
+                {"role": "system", "content": (
+                    "You are a helpful assistant. Use the following context (which includes explicit source references) to answer the question. "
+                    "When referencing specific details, include the source reference (file name and page number) in your answer."
+                )},
+                {"role": "user", "content": f"Context:\n{combined_context}\n\nQuestion: {prompt}"}
+            ]
+            bot_response = get_chat_response(messages)
+            if bot_response:
+                st.session_state.messages.append({"role": "assistant", "content": bot_response})
+                with st.chat_message("assistant"):
+                    st.markdown(bot_response)
     else:
         st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
 
