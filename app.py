@@ -288,7 +288,7 @@ def sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         file_name = chunk["source"].get("file", "").lower()
         page = chunk["source"].get("page")
         try:
-            page_num = int(page) if page is not None and str(page).isdigit() else 0
+            page_num = int(page) if page is not None and str(page).strip().isdigit() else 0
         except Exception:
             page_num = 0
         return (file_name, page_num)
@@ -306,11 +306,17 @@ def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str,
     for chunk in chunks:
         text = chunk.get("text", "")
         for match in re.finditer(pattern, text, re.IGNORECASE):
-            snippet = ' '.join(match.group(0).split())  # collapse whitespace and newlines
+            snippet = ' '.join(match.group(0).split())  # collapse extra whitespace and newlines
             file_name = chunk["source"].get("file", "unknown file")
             page = chunk["source"].get("page")
-            # If page is missing or not a digit, set to N/A
-            if not page or not str(page).isdigit():
+            if page:
+                page = str(page).strip()
+                m = re.search(r'\d+', page)
+                if m:
+                    page = m.group(0)
+                else:
+                    page = "N/A"
+            else:
                 page = "N/A"
             results.append({
                 "file": file_name,
@@ -321,7 +327,7 @@ def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str,
         f = item.get("file", "").lower()
         p = item.get("page")
         try:
-            p_num = int(p) if isinstance(p, (str, int)) and str(p).isdigit() else 0
+            p_num = int(p) if p != "N/A" and str(p).isdigit() else 0
         except Exception:
             p_num = 0
         return (f, p_num)
@@ -370,7 +376,7 @@ if uploaded_files and "embeddings" not in st.session_state:
                     st.session_state.chunks.extend(chunks)
                     st.success(f"Processed file: {uploaded_file.name}")
 
-    # Optionally split large chunks further
+    # Optionally split large chunks further.
     final_chunks = []
     for chunk in st.session_state.chunks:
         text = chunk["text"]
@@ -412,7 +418,7 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
         if search_match:
             search_term = search_match.group(1)
         else:
-            st.error("Could not determine the search term from your query. Please include it in your query (e.g., exact matches of the word 'mcculloch').")
+            st.error("Could not determine the search term from your query. Please include it (e.g., exact matches of the word 'mcculloch').")
             search_term = None
 
         if search_term:
@@ -456,7 +462,7 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
         for chunk in relevant_chunks_sorted:
             file_ref = chunk["source"].get("file", "unknown file")
             page_ref = chunk["source"].get("page")
-            if page_ref and str(page_ref).isdigit():
+            if page_ref and str(page_ref).strip().isdigit():
                 ref_str = f"File: {file_ref}, Page: {page_ref}"
             else:
                 ref_str = f"File: {file_ref}, Page: N/A"
@@ -476,3 +482,4 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
+
