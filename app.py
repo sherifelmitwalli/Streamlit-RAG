@@ -12,6 +12,7 @@ from pptx import Presentation
 from sklearn.metrics.pairwise import cosine_similarity
 import openai
 import json
+import re  # For file identifier extraction
 
 # -----------------------------
 # Logging & Constants
@@ -363,11 +364,31 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
         st.markdown(prompt)
 
     if "embeddings" in st.session_state and "chunks" in st.session_state:
+        # Attempt to extract a file identifier from the query, e.g. "file JA452-197"
+        file_match = re.search(r'file\s+([A-Za-z0-9\-]+)', prompt, re.IGNORECASE)
+        if file_match:
+            file_id = file_match.group(1)
+            # Filter for chunks whose metadata 'file' value contains the identifier
+            filtered_indices = [
+                i for i, chunk in enumerate(st.session_state.chunks)
+                if file_id.lower() in chunk["source"].get("file", "").lower()
+            ]
+            if filtered_indices:
+                filtered_text_chunks = [st.session_state.chunks[i]["text"] for i in filtered_indices]
+                filtered_embeddings = st.session_state.embeddings[filtered_indices]
+            else:
+                # Fall back to all chunks if no matching file is found
+                filtered_text_chunks = [chunk["text"] for chunk in st.session_state.chunks]
+                filtered_embeddings = st.session_state.embeddings
+        else:
+            filtered_text_chunks = [chunk["text"] for chunk in st.session_state.chunks]
+            filtered_embeddings = st.session_state.embeddings
+
         with st.spinner("Retrieving relevant context..."):
             relevant_contexts = find_relevant_context(
                 prompt,
-                [chunk["text"] for chunk in st.session_state.chunks],
-                st.session_state.embeddings
+                filtered_text_chunks,
+                filtered_embeddings
             )
         if relevant_contexts:
             combined_context = "\n\n".join(relevant_contexts)
@@ -383,4 +404,5 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                         st.markdown(bot_response)
     else:
         st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
+
 
