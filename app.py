@@ -104,7 +104,7 @@ def clear_cache() -> None:
 def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any]]:
     """
     Process a JSON file and convert it to text chunks with metadata.
-    Supports dictionaries (with keys like "page_1", etc.), lists, or other JSON types.
+    It looks for keys matching the pattern 'page_' followed by digits to set the page metadata.
     """
     chunks = []
     try:
@@ -123,8 +123,9 @@ def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any
     
     if isinstance(data, dict):
         for key, value in data.items():
-            if isinstance(key, str) and key.lower().startswith("page_"):
-                page_num = key.split("_")[-1]
+            # Use regex to check if the key is of the form "page_<number>"
+            if isinstance(key, str) and re.fullmatch(r'page_\d+', key.lower()):
+                page_num = key.split("_")[-1]  # e.g., "1", "2", etc.
                 chunk_text = f"File: {file_name} | Page: {page_num}\n{value}"
                 chunks.append({"text": chunk_text, "source": {"file": file_name, "page": page_num}})
             else:
@@ -300,13 +301,12 @@ def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str,
     Extract all exact occurrences of the search_term (with a small context window)
     from the provided chunks. Returns a list of dictionaries with file, page, and snippet.
     """
-    # Build a regex pattern using the provided search_term.
     pattern = rf'((?:\S+\s+){{0,{context_words}}}{re.escape(search_term)}(?:\s+\S+){{0,{context_words}}})'
     results = []
     for chunk in chunks:
         text = chunk.get("text", "")
         for match in re.finditer(pattern, text, re.IGNORECASE):
-            snippet = ' '.join(match.group(0).split())  # collapse extra whitespace and newlines
+            snippet = ' '.join(match.group(0).split())  # Collapse extra whitespace/newlines
             file_name = chunk["source"].get("file", "unknown file")
             page = chunk["source"].get("page")
             if page:
