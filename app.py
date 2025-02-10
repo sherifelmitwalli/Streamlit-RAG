@@ -306,9 +306,12 @@ def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str,
     for chunk in chunks:
         text = chunk.get("text", "")
         for match in re.finditer(pattern, text, re.IGNORECASE):
-            snippet = match.group(0).strip()
+            snippet = ' '.join(match.group(0).split())  # collapse whitespace and newlines
             file_name = chunk["source"].get("file", "unknown file")
-            page = chunk["source"].get("page", "unknown page")
+            page = chunk["source"].get("page")
+            # If page is missing or not a digit, set to N/A
+            if not page or not str(page).isdigit():
+                page = "N/A"
             results.append({
                 "file": file_name,
                 "page": page,
@@ -453,10 +456,10 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
         for chunk in relevant_chunks_sorted:
             file_ref = chunk["source"].get("file", "unknown file")
             page_ref = chunk["source"].get("page")
-            if page_ref:
+            if page_ref and str(page_ref).isdigit():
                 ref_str = f"File: {file_ref}, Page: {page_ref}"
             else:
-                ref_str = f"File: {file_ref}"
+                ref_str = f"File: {file_ref}, Page: N/A"
             formatted_context = f"{ref_str}\n{chunk['text']}"
             formatted_contexts.append(formatted_context)
         combined_context = "\n\n".join(formatted_contexts)
@@ -473,4 +476,3 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
-
