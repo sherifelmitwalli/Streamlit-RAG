@@ -4,16 +4,18 @@ import logging
 import time
 from io import BytesIO
 from typing import List, Optional, Dict, Any
-
+import zipfile  # For handling ZIP files
 import PyPDF2
 import pandas as pd
 import numpy as np
 from pptx import Presentation
 from sklearn.metrics.pairwise import cosine_similarity
 import openai
-import json  # New import to handle JSON files
+import json
 
-# Initialize logging with more detailed formatting and file output
+# -----------------------------
+# Logging & Constants
+# -----------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -24,24 +26,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Memory management
-def clear_cache() -> None:
-    """Clear all Streamlit cache to free up memory."""
-    try:
-        st.cache_data.clear()
-        logger.info("Cache cleared successfully")
-    except Exception as e:
-        logger.error(f"Error clearing cache: {e}")
-
-# Constants
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
-CHUNK_SIZE = 500  # Size of text chunks for processing
-MAX_RETRIES = 3  # Maximum number of API call retries
-RETRY_DELAY = 5  # Delay between retries in seconds
+CHUNK_SIZE = 500                  # Size of text chunks for processing
+MAX_RETRIES = 3                   # Maximum number of API call retries
+RETRY_DELAY = 5                   # Delay between retries in seconds
 EMBEDDING_MODEL = "text-embedding-ada-002"
-TOP_K = 3  # Number of top relevant contexts to retrieve
+TOP_K = 3                         # Number of top relevant contexts to retrieve
 
-# Load secrets with enhanced error handling
+# -----------------------------
+# OpenAI & Secrets Setup
+# -----------------------------
 try:
     openai.api_key = st.secrets["OPENAI_API_KEY"]
     MODEL_NAME = st.secrets["MODEL"]
@@ -73,7 +67,6 @@ except (KeyError, ValueError) as e:
 
 # Validate API key by making a test request
 try:
-    # Simple API test using embeddings endpoint
     response = openai.Embedding.create(
         input="test",
         model=EMBEDDING_MODEL
@@ -88,7 +81,9 @@ except Exception as e:
     st.error(error_msg)
     st.stop()
 
-# Custom styling
+# -----------------------------
+# Custom Styling & Sidebar
+# -----------------------------
 st.markdown('''
 <style>
 div.stButton > button:first-child {
@@ -101,48 +96,53 @@ div.stButton > button:first-child {
 </style>
 ''', unsafe_allow_html=True)
 
-# Application information
 st.sidebar.header("About")
-st.sidebar.info("This app uses AI-assisted Retrieval-Augmented Generation (RAG) to answer questions based on uploaded files.")
+st.sidebar.info("This app uses AI-assisted Retrieval-Augmented Generation (RAG) to answer questions based on uploaded files or folders.")
 st.sidebar.markdown("[View Documentation](https://example.com)")
 
 st.title("Agentic RAG Chatbot")
-st.subheader("Upload a file and ask questions based on its content.")
+st.subheader("Upload one or more files or a folder (as a ZIP file) and ask questions based on their content.")
 
-def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[str]:
+# -----------------------------
+# Cache/Clear Helper
+# -----------------------------
+def clear_cache() -> None:
+    """Clear all Streamlit cache to free up memory."""
+    try:
+        st.cache_data.clear()
+        logger.info("Cache cleared successfully")
+    except Exception as e:
+        logger.error(f"Error clearing cache: {e}")
+
+# -----------------------------
+# File Processing Functions
+# -----------------------------
+def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[str]:
     """
-    Process uploaded file and extract text content.
+    Process a file given as a BytesIO object based on its file extension.
     
     Args:
-        uploaded_file: Streamlit UploadedFile object
-        
+        file_bytes: A BytesIO stream of the file content.
+        file_name: The name of the file.
+    
     Returns:
-        Optional[str]: Extracted text content or None if processing fails
+        Extracted text content as a string, or None if processing fails.
     """
+    ext = file_name.split('.')[-1].lower()
     try:
-        # Create a BytesIO object from the uploaded file's bytes
-        file_bytes = BytesIO(uploaded_file.read())
-        
-        if uploaded_file.type == "text/plain":
-            # Reset pointer for text files
+        if ext == "txt":
             file_bytes.seek(0)
             return file_bytes.read().decode("utf-8")
-            
-        elif uploaded_file.type == "application/pdf":
-            # Reset pointer for PDF
+        elif ext == "pdf":
             file_bytes.seek(0)
             reader = PyPDF2.PdfReader(file_bytes)
             text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
             return text
-            
-        elif uploaded_file.type == "text/csv":
-            # Reset pointer for CSV
+        elif ext == "csv":
             file_bytes.seek(0)
             df = pd.read_csv(file_bytes)
             return df.to_string()
-            
-        elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-            # Reset pointer for PPTX
+        elif ext == "pptx":
             file_bytes.seek(0)
             presentation = Presentation(file_bytes)
             text = "\n".join(
@@ -150,48 +150,59 @@ def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -
                 for shape in slide.shapes if hasattr(shape, "text")
             )
             return text
-        
-        elif uploaded_file.type == "application/json":
-            # Reset pointer for JSON
+        elif ext == "json":
             file_bytes.seek(0)
             data = json.load(file_bytes)
             return json.dumps(data, indent=2)
-            
         else:
-            st.error(f"Unsupported file type: {uploaded_file.type}. Please upload a .txt, .pdf, .csv, .pptx, or .json file.")
+            st.error(f"Unsupported file extension: {ext} for file {file_name}")
             return None
+    except Exception as e:
+        logger.error(f"Error processing file {file_name}: {str(e)}", exc_info=True)
+        st.error(f"Error processing file {file_name}. Error: {str(e)}")
+        return None
+
+def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[str]:
+    """
+    Process an uploaded file (non-ZIP) using process_file_bytes.
+    
+    Args:
+        uploaded_file: A Streamlit UploadedFile object.
+        
+    Returns:
+        Extracted text content as a string, or None if processing fails.
+    """
+    try:
+        file_bytes = BytesIO(uploaded_file.read())
+        return process_file_bytes(file_bytes, uploaded_file.name)
     except Exception as e:
         logger.error(f"Error processing file {uploaded_file.name}: {str(e)}", exc_info=True)
         st.error(f"Error processing file {uploaded_file.name}. Error: {str(e)}")
         return None
     finally:
-        # Clean up
         file_bytes.close()
 
+# -----------------------------
+# Embedding & Chat Functions
+# -----------------------------
 @st.cache_data(show_spinner=False, ttl=3600)  # Cache for 1 hour
 def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
     """
     Generate embeddings for text chunks using OpenAI's API.
     
     Args:
-        text_chunks (List[str]): List of text segments to embed
+        text_chunks: List of text segments to embed.
         
     Returns:
-        np.ndarray: Array of embeddings or empty array if generation fails
+        A NumPy array of embeddings.
     """
     try:
-        # Process chunks in smaller batches to avoid rate limits
         batch_size = 20
         all_embeddings = []
-        
         for i in range(0, len(text_chunks), batch_size):
-            batch = text_chunks[i:i + batch_size]
-            
-            # Filter out empty chunks and ensure text is clean
-            batch = [chunk.strip() for chunk in batch if chunk.strip()]
+            batch = [chunk.strip() for chunk in text_chunks[i:i + batch_size] if chunk.strip()]
             if not batch:
                 continue
-                
             try:
                 response = openai.Embedding.create(
                     input=batch,
@@ -199,26 +210,20 @@ def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
                 )
                 batch_embeddings = [data['embedding'] for data in response['data']]
                 all_embeddings.extend(batch_embeddings)
-                
-                # Add a small delay to avoid rate limits
                 if i + batch_size < len(text_chunks):
                     time.sleep(0.5)
-                    
             except openai.error.RateLimitError:
                 st.warning("Rate limit reached. Waiting before retrying...")
-                time.sleep(20)  # Wait longer on rate limit
+                time.sleep(20)
                 response = openai.Embedding.create(
                     input=batch,
                     model=EMBEDDING_MODEL
                 )
                 batch_embeddings = [data['embedding'] for data in response['data']]
                 all_embeddings.extend(batch_embeddings)
-                
         if not all_embeddings:
             raise ValueError("No valid embeddings were generated")
-            
         return np.array(all_embeddings)
-        
     except openai.error.AuthenticationError:
         logger.error("OpenAI API authentication failed")
         st.error("Failed to authenticate with OpenAI API. Please check your API key configuration.")
@@ -239,16 +244,16 @@ def find_relevant_context(
     top_k: int = TOP_K
 ) -> List[str]:
     """
-    Find most relevant context for a query using cosine similarity.
+    Find the most relevant text chunks for a query.
     
     Args:
-        query (str): User's question
-        text_chunks (List[str]): Available text segments
-        embeddings (np.ndarray): Pre-computed embeddings
-        top_k (int): Number of relevant chunks to retrieve
+        query: The user's question.
+        text_chunks: List of text segments.
+        embeddings: Array of pre-computed embeddings.
+        top_k: Number of relevant chunks to retrieve.
         
     Returns:
-        List[str]: Most relevant text chunks
+        A list of the most relevant text chunks.
     """
     try:
         response = openai.Embedding.create(
@@ -270,15 +275,15 @@ def get_chat_response(
     delay: int = RETRY_DELAY
 ) -> Optional[str]:
     """
-    Get response from chat model with retry mechanism.
+    Get a response from the chat model with retries.
     
     Args:
-        messages (List[Dict[str, str]]): Conversation messages
-        retries (int): Number of retry attempts
-        delay (int): Delay between retries in seconds
+        messages: Conversation messages.
+        retries: Number of retry attempts.
+        delay: Delay between retries in seconds.
         
     Returns:
-        Optional[str]: Model's response or None if all retries fail
+        The chat model's response, or None if it fails.
     """
     for attempt in range(retries):
         try:
@@ -299,45 +304,78 @@ def get_chat_response(
             return None
     return None
 
-# File upload with size limit
-uploaded_file = st.file_uploader(
-    "Upload a file (.txt, .pdf, .csv, .pptx, .json):",
-    type=["txt", "pdf", "csv", "pptx", "json"],
-    accept_multiple_files=False
+# -----------------------------
+# File Upload & Processing
+# -----------------------------
+# Allow multiple files and ZIP files (for folder uploads)
+uploaded_files = st.file_uploader(
+    "Upload one or more files or a ZIP file containing a folder (.txt, .pdf, .csv, .pptx, .json, .zip):",
+    type=["txt", "pdf", "csv", "pptx", "json", "zip"],
+    accept_multiple_files=True
 )
 
-if uploaded_file:
-    if uploaded_file.size > MAX_FILE_SIZE:
-        st.error(f"File size exceeds the limit of {MAX_FILE_SIZE / (1024 * 1024):.1f} MB.")
-    else:
-        with st.spinner("Processing file..."):
-            file_text = process_file(uploaded_file)
-            if file_text:
-                st.success("File processed successfully!")
-                
-                # Clear previous session state and cache
-                if 'messages' in st.session_state:
-                    del st.session_state.messages
-                if 'embeddings' in st.session_state:
-                    del st.session_state.embeddings
-                if 'text_chunks' in st.session_state:
-                    del st.session_state.text_chunks
-                clear_cache()
+if uploaded_files:
+    # Use session_state to accumulate text from multiple uploads
+    if "combined_text" not in st.session_state:
+        st.session_state.combined_text = ""
 
-                # Chunk the text
-                text_chunks = [file_text[i:i+CHUNK_SIZE] for i in range(0, len(file_text), CHUNK_SIZE)]
-                st.session_state.text_chunks = text_chunks
+    for uploaded_file in uploaded_files:
+        if uploaded_file.size > MAX_FILE_SIZE:
+            st.error(f"File {uploaded_file.name} exceeds the size limit of {MAX_FILE_SIZE / (1024 * 1024):.1f} MB.")
+            continue
 
-                # Generate embeddings with progress
-                with st.spinner("Generating embeddings..."):
-                    embeddings = generate_embeddings(text_chunks)
-                    if embeddings.size > 0:
-                        st.session_state.embeddings = embeddings
-                        st.success("Embeddings generated successfully!")
-                    else:
-                        st.error("Failed to generate embeddings. Please try again.")
+        # Check if the file is a ZIP file (for folder uploads)
+        if uploaded_file.name.lower().endswith(".zip"):
+            with st.spinner(f"Extracting folder from {uploaded_file.name}..."):
+                try:
+                    with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
+                        for zip_info in zip_ref.infolist():
+                            if not zip_info.is_dir():
+                                ext = zip_info.filename.split('.')[-1].lower()
+                                if ext in ["txt", "pdf", "csv", "pptx", "json"]:
+                                    file_content = zip_ref.read(zip_info.filename)
+                                    file_bytes = BytesIO(file_content)
+                                    text = process_file_bytes(file_bytes, zip_info.filename)
+                                    if text:
+                                        st.session_state.combined_text += "\n\n" + text
+                                        st.success(f"Processed file from folder: {zip_info.filename}")
+                                else:
+                                    st.warning(f"Skipping unsupported file {zip_info.filename} in the ZIP.")
+                except Exception as e:
+                    st.error(f"Failed to extract ZIP file {uploaded_file.name}: {str(e)}")
+        else:
+            with st.spinner(f"Processing file {uploaded_file.name}..."):
+                file_text = process_file(uploaded_file)
+                if file_text:
+                    st.session_state.combined_text += "\n\n" + file_text
+                    st.success(f"Processed file: {uploaded_file.name}")
 
-# Initialize chat messages in session state
+    # Proceed if any text was successfully accumulated
+    if st.session_state.combined_text:
+        # Clear previous session state for embeddings if needed
+        if 'embeddings' in st.session_state:
+            del st.session_state.embeddings
+        if 'text_chunks' in st.session_state:
+            del st.session_state.text_chunks
+        clear_cache()
+
+        # Chunk the combined text
+        text_chunks = [st.session_state.combined_text[i:i+CHUNK_SIZE] 
+                       for i in range(0, len(st.session_state.combined_text), CHUNK_SIZE)]
+        st.session_state.text_chunks = text_chunks
+
+        # Generate embeddings
+        with st.spinner("Generating embeddings..."):
+            embeddings = generate_embeddings(text_chunks)
+            if embeddings.size > 0:
+                st.session_state.embeddings = embeddings
+                st.success("Embeddings generated successfully!")
+            else:
+                st.error("Failed to generate embeddings. Please try again.")
+
+# -----------------------------
+# Chat Interface
+# -----------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -346,8 +384,8 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# User input
-if prompt := st.chat_input("Ask a question about the uploaded file:"):
+# Chat input
+if prompt := st.chat_input("Ask a question about the uploaded content:"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -372,5 +410,4 @@ if prompt := st.chat_input("Ask a question about the uploaded file:"):
                     with st.chat_message("assistant"):
                         st.markdown(bot_response)
     else:
-        st.warning("Please upload a file and wait for embeddings to be generated before asking questions.")
-
+        st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
