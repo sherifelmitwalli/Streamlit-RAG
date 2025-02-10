@@ -46,23 +46,7 @@ try:
 except (KeyError, ValueError) as e:
     error_msg = str(e)
     logger.error(f"Configuration error: {error_msg}")
-    st.error(f"""
-    Configuration Error: Missing required secrets.
-    
-    Please ensure you have configured in Streamlit Cloud:
-    1. OPENAI_API_KEY
-    2. MODEL (should be "gpt-4o-mini")
-    
-    Go to your app settings in Streamlit Cloud:
-    1. Click on "Settings" ⚙️
-    2. Select "Secrets"
-    3. Add these secrets:
-    ```toml
-    MODEL = "gpt-4o-mini"
-    OPENAI_API_KEY = "your-openai-api-key"
-    ```
-    Note: Do not include any section headers like [openai] in the secrets.
-    """)
+    st.error("Configuration Error: Missing required secrets.")
     st.stop()
 
 # Validate API key by making a test request
@@ -97,7 +81,7 @@ div.stButton > button:first-child {
 ''', unsafe_allow_html=True)
 
 st.sidebar.header("About")
-st.sidebar.info("This app uses AI-assisted Retrieval-Augmented Generation (RAG) to answer questions based on uploaded files or folders.")
+st.sidebar.info("This app uses AI-assisted Retrieval-Augmented Generation (RAG) developed by TCRG to answer questions based on uploaded files or folders.")
 st.sidebar.markdown("[View Documentation](https://example.com)")
 
 st.title("Agentic RAG Chatbot")
@@ -107,7 +91,6 @@ st.subheader("Upload one or more files or a folder (as a ZIP file) and ask quest
 # Cache/Clear Helper
 # -----------------------------
 def clear_cache() -> None:
-    """Clear all Streamlit cache to free up memory."""
     try:
         st.cache_data.clear()
         logger.info("Cache cleared successfully")
@@ -118,16 +101,6 @@ def clear_cache() -> None:
 # File Processing Functions
 # -----------------------------
 def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[str]:
-    """
-    Process a file given as a BytesIO object based on its file extension.
-    
-    Args:
-        file_bytes: A BytesIO stream of the file content.
-        file_name: The name of the file.
-    
-    Returns:
-        Extracted text content as a string, or None if processing fails.
-    """
     ext = file_name.split('.')[-1].lower()
     try:
         if ext == "txt":
@@ -163,15 +136,6 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[str]:
         return None
 
 def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[str]:
-    """
-    Process an uploaded file (non-ZIP) using process_file_bytes.
-    
-    Args:
-        uploaded_file: A Streamlit UploadedFile object.
-        
-    Returns:
-        Extracted text content as a string, or None if processing fails.
-    """
     try:
         file_bytes = BytesIO(uploaded_file.read())
         return process_file_bytes(file_bytes, uploaded_file.name)
@@ -185,17 +149,8 @@ def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -
 # -----------------------------
 # Embedding & Chat Functions
 # -----------------------------
-@st.cache_data(show_spinner=False, ttl=3600)  # Cache for 1 hour
+@st.cache_data(show_spinner=False, ttl=3600)
 def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
-    """
-    Generate embeddings for text chunks using OpenAI's API.
-    
-    Args:
-        text_chunks: List of text segments to embed.
-        
-    Returns:
-        A NumPy array of embeddings.
-    """
     try:
         batch_size = 20
         all_embeddings = []
@@ -237,24 +192,7 @@ def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
         st.error(f"Failed to generate embeddings: {str(e)}")
         return np.array([])
 
-def find_relevant_context(
-    query: str,
-    text_chunks: List[str],
-    embeddings: np.ndarray,
-    top_k: int = TOP_K
-) -> List[str]:
-    """
-    Find the most relevant text chunks for a query.
-    
-    Args:
-        query: The user's question.
-        text_chunks: List of text segments.
-        embeddings: Array of pre-computed embeddings.
-        top_k: Number of relevant chunks to retrieve.
-        
-    Returns:
-        A list of the most relevant text chunks.
-    """
+def find_relevant_context(query: str, text_chunks: List[str], embeddings: np.ndarray, top_k: int = TOP_K) -> List[str]:
     try:
         response = openai.Embedding.create(
             input=[query],
@@ -269,22 +207,7 @@ def find_relevant_context(
         st.error("Failed to retrieve relevant context. Please try again later.")
         return []
 
-def get_chat_response(
-    messages: List[Dict[str, str]],
-    retries: int = MAX_RETRIES,
-    delay: int = RETRY_DELAY
-) -> Optional[str]:
-    """
-    Get a response from the chat model with retries.
-    
-    Args:
-        messages: Conversation messages.
-        retries: Number of retry attempts.
-        delay: Delay between retries in seconds.
-        
-    Returns:
-        The chat model's response, or None if it fails.
-    """
+def get_chat_response(messages: List[Dict[str, str]], retries: int = MAX_RETRIES, delay: int = RETRY_DELAY) -> Optional[str]:
     for attempt in range(retries):
         try:
             response = openai.ChatCompletion.create(
@@ -307,15 +230,14 @@ def get_chat_response(
 # -----------------------------
 # File Upload & Processing
 # -----------------------------
-# Allow multiple files and ZIP files (for folder uploads)
 uploaded_files = st.file_uploader(
     "Upload one or more files or a ZIP file containing a folder (.txt, .pdf, .csv, .pptx, .json, .zip):",
     type=["txt", "pdf", "csv", "pptx", "json", "zip"],
     accept_multiple_files=True
 )
 
-if uploaded_files:
-    # Use session_state to accumulate text from multiple uploads
+# Process files only if new files are uploaded and embeddings have not been generated yet.
+if uploaded_files and "embeddings" not in st.session_state:
     if "combined_text" not in st.session_state:
         st.session_state.combined_text = ""
 
@@ -324,7 +246,6 @@ if uploaded_files:
             st.error(f"File {uploaded_file.name} exceeds the size limit of {MAX_FILE_SIZE / (1024 * 1024):.1f} MB.")
             continue
 
-        # Check if the file is a ZIP file (for folder uploads)
         if uploaded_file.name.lower().endswith(".zip"):
             with st.spinner(f"Extracting folder from {uploaded_file.name}..."):
                 try:
@@ -350,21 +271,21 @@ if uploaded_files:
                     st.session_state.combined_text += "\n\n" + file_text
                     st.success(f"Processed file: {uploaded_file.name}")
 
-    # Proceed if any text was successfully accumulated
+    # Only proceed if there is accumulated text.
     if st.session_state.combined_text:
-        # Clear previous session state for embeddings if needed
+        # Clear any previous embedding-related session state.
         if 'embeddings' in st.session_state:
             del st.session_state.embeddings
         if 'text_chunks' in st.session_state:
             del st.session_state.text_chunks
         clear_cache()
 
-        # Chunk the combined text
+        # Create text chunks.
         text_chunks = [st.session_state.combined_text[i:i+CHUNK_SIZE] 
                        for i in range(0, len(st.session_state.combined_text), CHUNK_SIZE)]
         st.session_state.text_chunks = text_chunks
 
-        # Generate embeddings
+        # Generate embeddings.
         with st.spinner("Generating embeddings..."):
             embeddings = generate_embeddings(text_chunks)
             if embeddings.size > 0:
@@ -379,12 +300,10 @@ if uploaded_files:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Chat input
 if prompt := st.chat_input("Ask a question about the uploaded content:"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -411,3 +330,4 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                         st.markdown(bot_response)
     else:
         st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
+
