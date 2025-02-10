@@ -82,7 +82,7 @@ div.stButton > button:first-child {
 ''', unsafe_allow_html=True)
 
 st.sidebar.header("About")
-st.sidebar.info("This app uses AI-assisted Retrieval-Augmented Generation (RAG) developed by TCRG to answer questions based on uploaded files or folders.")
+st.sidebar.info("This app uses AI-assisted Retrieval-Augmented Generation (RAG) to answer questions based on uploaded files or folders.")
 st.sidebar.markdown("[View Documentation](https://example.com)")
 
 st.title("Agentic RAG Chatbot")
@@ -286,6 +286,21 @@ def get_chat_response(messages: List[Dict[str, str]], retries: int = MAX_RETRIES
             return None
     return None
 
+def sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Sort chunks by file name (alphabetically) and by page number (numerically if available).
+    """
+    def chunk_sort_key(chunk):
+        file_name = chunk["source"].get("file", "").lower()
+        page = chunk["source"].get("page")
+        try:
+            # Convert page to integer if possible
+            page_num = int(page) if page is not None and str(page).isdigit() else 0
+        except Exception:
+            page_num = 0
+        return (file_name, page_num)
+    return sorted(chunks, key=chunk_sort_key)
+
 # -----------------------------
 # File Upload & Processing
 # -----------------------------
@@ -392,26 +407,24 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
             top_indices = find_relevant_context_indices(prompt, filtered_text_chunks, filtered_embeddings)
         # Retrieve the corresponding chunks (with metadata) using the indices.
         relevant_chunks = [filtered_chunks[i] for i in top_indices]
+        # Sort the relevant chunks by file name and page number.
+        relevant_chunks_sorted = sort_chunks(relevant_chunks)
         # Build a combined context string that explicitly includes reference info.
         formatted_contexts = []
-        for chunk in relevant_chunks:
+        for chunk in relevant_chunks_sorted:
             file_ref = chunk["source"].get("file", "unknown file")
             page_ref = chunk["source"].get("page")
             if page_ref:
-                ref_str = f"File: {file_ref} | Page: {page_ref}"
+                ref_str = f"File: {file_ref}, Page: {page_ref}"
             else:
                 ref_str = f"File: {file_ref}"
-            # Include the reference (even if it is already in the text) to be explicit.
             formatted_context = f"{ref_str}\n{chunk['text']}"
             formatted_contexts.append(formatted_context)
         combined_context = "\n\n".join(formatted_contexts)
 
         with st.spinner("Generating response..."):
             messages = [
-                {"role": "system", "content": (
-                    "You are a helpful assistant. Use the following context (which includes explicit source references) to answer the question. "
-                    "When referencing specific details, include the source reference (file name and page number) in your answer."
-                )},
+                {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": f"Context:\n{combined_context}\n\nQuestion: {prompt}"}
             ]
             bot_response = get_chat_response(messages)
