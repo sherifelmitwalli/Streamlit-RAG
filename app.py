@@ -12,7 +12,7 @@ from pptx import Presentation
 from sklearn.metrics.pairwise import cosine_similarity
 import openai
 import json
-import re  # For file identifier extraction
+import re  # For regex extraction
 
 # -----------------------------
 # Logging & Constants
@@ -104,12 +104,7 @@ def clear_cache() -> None:
 def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any]]:
     """
     Process a JSON file and convert it to text chunks with metadata.
-    
-    Supports:
-      - Dictionaries with keys like "page_1", "page_2", etc.
-      - Dictionaries with other keys (the key is included as part of the metadata).
-      - Lists (each item is treated as a separate chunk).
-      - Other JSON data types (dumped as a whole).
+    Supports dictionaries (with keys like "page_1", etc.), lists, or other JSON types.
     """
     chunks = []
     try:
@@ -147,8 +142,7 @@ def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any
 
 def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dict[str, Any]]]:
     """
-    Processes the file bytes and returns a list of chunk dictionaries.
-    Each dictionary contains 'text' and 'source' metadata.
+    Processes file bytes and returns a list of chunk dictionaries, each with text and source metadata.
     """
     ext = file_name.split('.')[-1].lower()
     try:
@@ -250,7 +244,7 @@ def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
 
 def find_relevant_context_indices(query: str, text_chunks: List[str], embeddings: np.ndarray, top_k: int = TOP_K) -> List[int]:
     """
-    Returns the indices of the top_k text_chunks that are most similar to the query.
+    Returns the indices of the top_k text_chunks most similar to the query.
     """
     try:
         response = openai.Embedding.create(
@@ -288,18 +282,50 @@ def get_chat_response(messages: List[Dict[str, str]], retries: int = MAX_RETRIES
 
 def sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Sort chunks by file name (alphabetically) and by page number (numerically if available).
+    Sort chunks by file name (alphabetically) and by page number (numerically, if available).
     """
     def chunk_sort_key(chunk):
         file_name = chunk["source"].get("file", "").lower()
         page = chunk["source"].get("page")
         try:
-            # Convert page to integer if possible
             page_num = int(page) if page is not None and str(page).isdigit() else 0
         except Exception:
             page_num = 0
         return (file_name, page_num)
     return sorted(chunks, key=chunk_sort_key)
+
+def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str,
+                           context_words: int = 3) -> List[Dict[str, Any]]:
+    """
+    Extract all exact occurrences of the search_term (with a small context window)
+    from the provided chunks. Returns a list of dictionaries with file, page, and snippet.
+    """
+    # Build a regex pattern using the provided search_term
+    # This pattern captures up to `context_words` words before and after the term.
+    pattern = rf'((?:\S+\s+){{0,{context_words}}}{re.escape(search_term)}(?:\s+\S+){{0,{context_words}}})'
+    results = []
+    for chunk in chunks:
+        text = chunk.get("text", "")
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            snippet = match.group(0).strip()
+            # Get metadata from the chunk
+            file_name = chunk["source"].get("file", "unknown file")
+            page = chunk["source"].get("page", "unknown page")
+            results.append({
+                "file": file_name,
+                "page": page,
+                "snippet": snippet
+            })
+    # Sort results by file name and page number
+    def result_sort_key(item):
+        f = item.get("file", "").lower()
+        p = item.get("page")
+        try:
+            p_num = int(p) if isinstance(p, (str, int)) and str(p).isdigit() else 0
+        except Exception:
+            p_num = 0
+        return (f, p_num)
+    return sorted(results, key=result_sort_key)
 
 # -----------------------------
 # File Upload & Processing
@@ -381,8 +407,34 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    if "embeddings" in st.session_state and "chunks" in st.session_state:
-        # If the query mentions a file identifier, filter the chunks accordingly.
+    # Check if the query asks for exact matches.
+    if "exact match" in prompt.lower():
+        # Try to extract the search term from the query.
+        # For example, if the query says: "find all exact matches of the name 'mcculloch'" 
+        search_match = re.search(r'exact matches? of (?:the name|the word)?\s*[\'"]?(\w+)[\'"]?', prompt, re.IGNORECASE)
+        if search_match:
+            search_term = search_match.group(1)
+        else:
+            st.error("Could not determine the search term from your query. Please include it in your query (for example: exact matches of the word 'mcculloch').")
+            search_term = None
+
+        if search_term:
+            # Use regex-based extraction over all chunks.
+            exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
+            if exact_results:
+                # Build a numbered list of results.
+                response_lines = []
+                for idx, res in enumerate(exact_results, start=1):
+                    response_lines.append(f"{idx}. File: {res['file']}, Page: {res['page']}\n   {res['snippet']}")
+                bot_response = "\n\n".join(response_lines)
+            else:
+                bot_response = "No exact matches found."
+            st.session_state.messages.append({"role": "assistant", "content": bot_response})
+            with st.chat_message("assistant"):
+                st.markdown(bot_response)
+    else:
+        # Otherwise, use the semantic retrieval approach.
+        # Optionally filter by file identifier if provided in the query.
         file_match = re.search(r'file\s+([A-Za-z0-9\-]+)', prompt, re.IGNORECASE)
         if file_match:
             file_id = file_match.group(1)
@@ -405,11 +457,9 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
 
         with st.spinner("Retrieving relevant context..."):
             top_indices = find_relevant_context_indices(prompt, filtered_text_chunks, filtered_embeddings)
-        # Retrieve the corresponding chunks (with metadata) using the indices.
+        # Retrieve corresponding chunks with metadata.
         relevant_chunks = [filtered_chunks[i] for i in top_indices]
-        # Sort the relevant chunks by file name and page number.
         relevant_chunks_sorted = sort_chunks(relevant_chunks)
-        # Build a combined context string that explicitly includes reference info.
         formatted_contexts = []
         for chunk in relevant_chunks_sorted:
             file_ref = chunk["source"].get("file", "unknown file")
@@ -434,5 +484,4 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     st.markdown(bot_response)
     else:
         st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
-
 
