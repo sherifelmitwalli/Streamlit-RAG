@@ -300,15 +300,13 @@ def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str,
     Extract all exact occurrences of the search_term (with a small context window)
     from the provided chunks. Returns a list of dictionaries with file, page, and snippet.
     """
-    # Build a regex pattern using the provided search_term
-    # This pattern captures up to `context_words` words before and after the term.
+    # Build a regex pattern using the provided search_term.
     pattern = rf'((?:\S+\s+){{0,{context_words}}}{re.escape(search_term)}(?:\s+\S+){{0,{context_words}}})'
     results = []
     for chunk in chunks:
         text = chunk.get("text", "")
         for match in re.finditer(pattern, text, re.IGNORECASE):
             snippet = match.group(0).strip()
-            # Get metadata from the chunk
             file_name = chunk["source"].get("file", "unknown file")
             page = chunk["source"].get("page", "unknown page")
             results.append({
@@ -316,7 +314,6 @@ def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str,
                 "page": page,
                 "snippet": snippet
             })
-    # Sort results by file name and page number
     def result_sort_key(item):
         f = item.get("file", "").lower()
         p = item.get("page")
@@ -382,7 +379,6 @@ if uploaded_files and "embeddings" not in st.session_state:
             final_chunks.append(chunk)
     st.session_state.chunks = final_chunks
 
-    # Generate embeddings from the processed text chunks.
     text_for_embedding = [chunk["text"] for chunk in st.session_state.chunks]
     with st.spinner("Generating embeddings..."):
         embeddings = generate_embeddings(text_for_embedding)
@@ -409,20 +405,16 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
 
     # Check if the query asks for exact matches.
     if "exact match" in prompt.lower():
-        # Try to extract the search term from the query.
-        # For example, if the query says: "find all exact matches of the name 'mcculloch'" 
         search_match = re.search(r'exact matches? of (?:the name|the word)?\s*[\'"]?(\w+)[\'"]?', prompt, re.IGNORECASE)
         if search_match:
             search_term = search_match.group(1)
         else:
-            st.error("Could not determine the search term from your query. Please include it in your query (for example: exact matches of the word 'mcculloch').")
+            st.error("Could not determine the search term from your query. Please include it in your query (e.g., exact matches of the word 'mcculloch').")
             search_term = None
 
         if search_term:
-            # Use regex-based extraction over all chunks.
             exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
             if exact_results:
-                # Build a numbered list of results.
                 response_lines = []
                 for idx, res in enumerate(exact_results, start=1):
                     response_lines.append(f"{idx}. File: {res['file']}, Page: {res['page']}\n   {res['snippet']}")
@@ -433,8 +425,6 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
             with st.chat_message("assistant"):
                 st.markdown(bot_response)
     else:
-        # Otherwise, use the semantic retrieval approach.
-        # Optionally filter by file identifier if provided in the query.
         file_match = re.search(r'file\s+([A-Za-z0-9\-]+)', prompt, re.IGNORECASE)
         if file_match:
             file_id = file_match.group(1)
@@ -457,7 +447,6 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
 
         with st.spinner("Retrieving relevant context..."):
             top_indices = find_relevant_context_indices(prompt, filtered_text_chunks, filtered_embeddings)
-        # Retrieve corresponding chunks with metadata.
         relevant_chunks = [filtered_chunks[i] for i in top_indices]
         relevant_chunks_sorted = sort_chunks(relevant_chunks)
         formatted_contexts = []
@@ -482,6 +471,6 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                 st.session_state.messages.append({"role": "assistant", "content": bot_response})
                 with st.chat_message("assistant"):
                     st.markdown(bot_response)
-    else:
-        st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
+else:
+    st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
 
