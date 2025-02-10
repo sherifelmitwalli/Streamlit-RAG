@@ -11,6 +11,7 @@ import numpy as np
 from pptx import Presentation
 from sklearn.metrics.pairwise import cosine_similarity
 import openai
+import json  # New import to handle JSON files
 
 # Initialize logging with more detailed formatting and file output
 logging.basicConfig(
@@ -149,9 +150,15 @@ def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -
                 for shape in slide.shapes if hasattr(shape, "text")
             )
             return text
+        
+        elif uploaded_file.type == "application/json":
+            # Reset pointer for JSON
+            file_bytes.seek(0)
+            data = json.load(file_bytes)
+            return json.dumps(data, indent=2)
             
         else:
-            st.error(f"Unsupported file type: {uploaded_file.type}. Please upload a .txt, .pdf, .csv, or .pptx file.")
+            st.error(f"Unsupported file type: {uploaded_file.type}. Please upload a .txt, .pdf, .csv, .pptx, or .json file.")
             return None
     except Exception as e:
         logger.error(f"Error processing file {uploaded_file.name}: {str(e)}", exc_info=True)
@@ -294,8 +301,8 @@ def get_chat_response(
 
 # File upload with size limit
 uploaded_file = st.file_uploader(
-    "Upload a file (.txt, .pdf, .csv, .pptx):",
-    type=["txt", "pdf", "csv", "pptx"],
+    "Upload a file (.txt, .pdf, .csv, .pptx, .json):",
+    type=["txt", "pdf", "csv", "pptx", "json"],
     accept_multiple_files=False
 )
 
