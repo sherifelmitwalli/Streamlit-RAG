@@ -83,7 +83,7 @@ div.stButton > button:first-child {
 ''', unsafe_allow_html=True)
 
 st.sidebar.header("About")
-st.sidebar.info("This app uses AI-assisted Retrieval-Augmented Generation (RAG) to answer questions based on uploaded files or folders.")
+st.sidebar.info("This app uses AI-assisted Retrieval-Augmented Generation (RAG) Developed by TCRG to answer questions based on uploaded files or folders.")
 st.sidebar.markdown("[View Documentation](https://example.com)")
 
 st.title("Agentic RAG Chatbot")
