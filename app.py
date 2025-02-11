@@ -447,18 +447,25 @@ def find_relevant_context_indices(query: str, text_chunks: List[str], embeddings
 
 def extract_snippets(text: str, search_terms: List[str], context: int = 100) -> List[str]:
     """
-    Extract multiple snippets for a list of search terms with improved context.
+    Extract multiple snippets for a list of search terms with improved context handling.
     """
+    # Remove metadata line for matching
+    # Get the metadata line first
+    metadata_match = re.match(r'^File:.*?\n', text)
+    metadata_length = len(metadata_match.group(0)) if metadata_match else 0
+    content_text = text[metadata_length:]
+    
     snippets = []
-    text_lower = text.lower()
+    text_lower = content_text.lower()
     
     for term in search_terms:
         term_lower = term.lower()
         matches = list(re.finditer(rf'\b{re.escape(term_lower)}\b', text_lower))
         
         for match in matches:
-            start = max(0, match.start() - context)
-            end = min(len(text), match.end() + context)
+            # Adjust start and end positions to account for metadata
+            start = max(metadata_length, metadata_length + match.start() - context)
+            end = min(len(text), metadata_length + match.end() + context)
             
             # Expand to word boundaries
             if start > 0:
@@ -481,31 +488,52 @@ def extract_snippets(text: str, search_terms: List[str], context: int = 100) -> 
 
 def flexible_match(text: str, term: str) -> Tuple[bool, float]:
     """
-    Enhanced matching with word boundaries and similarity scoring.
+    Enhanced matching with improved word boundaries and sensitivity.
     """
-    text_clean = ' '.join(text.lower().split())
-    words = term.lower().split()
+    # Clean and normalize the input text
+    text_clean = text.lower()
+    # Remove File/Page prefix lines for matching
+    text_clean = re.sub(r'^File:.*?\|.*?\n', '', text_clean)
+    text_clean = clean_text(text_clean)
     
-    # Check for exact word matches with word boundaries
-    word_matches = 0
-    for word in words:
-        pattern = r'\b' + re.escape(word) + r'\b'
-        if re.search(pattern, text_clean):
-            word_matches += 1
+    term_clean = term.lower()
     
-    match_score = word_matches / len(words)
-    exact_match = match_score == 1.0
+    # First try exact phrase matching
+    if f" {term_clean} " in f" {text_clean} ":
+        return True, 1.0
     
-    # For longer terms (>4 chars), try fuzzy matching if exact match fails
-    if not exact_match and len(term) > 4:
+    # Check for term at start or end of text
+    if text_clean.startswith(term_clean + " ") or text_clean.endswith(" " + term_clean):
+        return True, 1.0
+        
+    # Then try word-by-word matching
+    words = term_clean.split()
+    if len(words) == 1:
+        # For single words, use word boundary matching
+        pattern = r'\b' + re.escape(term_clean) + r'\b'
+        if re.search(pattern, text_clean, re.IGNORECASE):
+            return True, 1.0
+    else:
+        # For phrases, check each word
+        word_matches = 0
+        for word in words:
+            pattern = r'\b' + re.escape(word) + r'\b'
+            if re.search(pattern, text_clean, re.IGNORECASE):
+                word_matches += 1
+        match_score = word_matches / len(words)
+        if match_score == 1.0:
+            return True, 1.0
+        elif match_score > 0.5:  # More than half the words match
+            return False, match_score
+    
+    # Last resort: check for fuzzy matches on longer terms
+    if len(term_clean) > 4:
         for text_word in text_clean.split():
             if len(text_word) > 4:
-                # Check for common prefixes/suffixes and similar length
-                if (text_word.startswith(term[:3]) or text_word.endswith(term[-3:])) and \
-                   abs(len(text_word) - len(term)) <= 2:
-                    match_score = max(match_score, 0.8)
+                if text_word.startswith(term_clean[:4]) or text_word.endswith(term_clean[-4:]):
+                    return False, 0.8
     
-    return exact_match, match_score
+    return False, 0.0
 
 def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str, min_score: float = 0.8) -> List[Dict[str, Any]]:
     """
@@ -614,19 +642,39 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
 
     # Patterns to identify search queries for any term
     patterns = [
-        r'(?:exact matches?|find|show|get|list|count|how many|mentions|occurrences) (?:of )?(?:the\s+)?(?:word\s+|term\s+)?[\'"]?([^\'"\n]+?)[\'"]?(?:\s|$)',
-        r'(?:search|look) for [\'"]?([^\'"\n]+?)[\'"]?(?:\s|$)',
-        r'(?:the\s+)?(?:word|term)\s+[\'"]?([^\'"\n]+?)[\'"]?',
-        r'occurrences? of [\'"]?([^\'"\n]+?)[\'"]?(?:\s|$)'
+        r'(?:exact matches?|find|show|get|list|count|how many|mentions|occurrences) (?:of )?(?:the\s+)?(?:word\s+|term\s+)?[\'"]?([^\'"\n.,;]+?)[\'"]?(?:\s|$)',
+        r'(?:search|look) for [\'"]?([^\'"\n.,;]+?)[\'"]?(?:\s|$)',
+        r'(?:the\s+)?(?:word|term)\s+[\'"]?([^\'"\n.,;]+?)[\'"]?',
+        r'occurrences? of [\'"]?([^\'"\n.,;]+?)[\'"]?(?:\s|$)'
     ]
     
     # Try to identify search term in different patterns
     search_term = None
+    is_search_query = False
+    
+    # First check if this is a search query
     for pattern in patterns:
-        search_match = re.search(pattern, prompt, re.IGNORECASE)
-        if search_match:
-            search_term = search_match.group(1).strip()
+        if re.search(pattern, prompt, re.IGNORECASE):
+            is_search_query = True
             break
+    
+    if is_search_query:
+        # Extract the actual search term
+        for pattern in patterns:
+            search_match = re.search(pattern, prompt, re.IGNORECASE)
+            if search_match:
+                term = search_match.group(1).strip()
+                # Clean and normalize search term
+                term = re.sub(r'[.,;:]', '', term).strip()
+                if len(term) > 2 and term.lower() not in ['all', 'the', 'and', 'for', 'but', 'its', 'any', 'are', 'was', 'were']:
+                    search_term = term
+                    break
+        
+        if not search_term:
+            st.warning("Please specify a valid search term. For example:\n" + 
+                      "- 'find Chamber'\n" +
+                      "- 'show mentions of [specific word]'\n" +
+                      "- 'how many times [word] appears'")
 
     if search_term:
         exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
