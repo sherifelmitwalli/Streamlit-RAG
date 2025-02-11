@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 CHUNK_SIZE = 500                  # Maximum characters per text chunk
-OVERLAP = 150                     # Overlap between chunks to help preserve phrases
 MAX_RETRIES = 3                   # Maximum number of API call retries
 RETRY_DELAY = 5                   # Delay between retries in seconds
 EMBEDDING_MODEL = "text-embedding-ada-002"
@@ -344,33 +343,6 @@ def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str,
         return (f, p_num)
     return sorted(results, key=result_sort_key)
 
-def search_full_text(chunks: List[Dict[str, Any]], search_term: str, context_chars: int = 200) -> List[Dict[str, Any]]:
-    """
-    If no matches are found in individual chunks, this function groups all chunks by file,
-    combines the full normalized text, and searches for the search_term.
-    It returns snippets (with context) from the full text.
-    """
-    results = []
-    file_texts = {}
-    # Group all text by file.
-    for chunk in chunks:
-        file_name = chunk["source"].get("file", "unknown file")
-        if file_name not in file_texts:
-            file_texts[file_name] = ""
-        file_texts[file_name] += " " + chunk["text"]
-    
-    for file_name, text in file_texts.items():
-        normalized_text = ' '.join(text.split())
-        for match in re.finditer(re.escape(search_term), normalized_text, re.IGNORECASE):
-            start = max(0, match.start() - context_chars)
-            end = match.end() + context_chars
-            snippet = normalized_text[start:end]
-            results.append({
-                "file": file_name,
-                "snippet": snippet
-            })
-    return results
-
 # -----------------------------
 # File Upload & Processing
 # -----------------------------
@@ -414,25 +386,17 @@ if uploaded_files and "embeddings" not in st.session_state:
                     st.session_state.chunks.extend(chunks)
                     st.success(f"Processed file: {uploaded_file.name}")
 
-    # Revised chunking logic:
-    # Normalize text (collapse whitespace) and split with overlapping chunks.
+    # Optionally split large chunks further.
     final_chunks = []
     for chunk in st.session_state.chunks:
         text = chunk["text"]
-        normalized_text = ' '.join(text.split())
-        if len(normalized_text) > CHUNK_SIZE:
-            start = 0
-            while start < len(normalized_text):
-                end = start + CHUNK_SIZE
-                sub_text = normalized_text[start:end]
+        if len(text) > CHUNK_SIZE:
+            for i in range(0, len(text), CHUNK_SIZE):
+                sub_text = text[i:i+CHUNK_SIZE]
                 final_chunks.append({"text": sub_text, "source": chunk["source"]})
-                start += (CHUNK_SIZE - OVERLAP)  # Advance with overlap to help preserve phrases
         else:
-            final_chunks.append({"text": normalized_text, "source": chunk["source"]})
+            final_chunks.append(chunk)
     st.session_state.chunks = final_chunks
-
-    # Optional: For debugging, you can uncomment the following line to display a snippet of extracted text.
-    # st.write("Extracted Chunks (Debug):", st.session_state.chunks)
 
     text_for_embedding = [chunk["text"] for chunk in st.session_state.chunks]
     with st.spinner("Generating embeddings..."):
@@ -458,33 +422,24 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # If the query asks for an exact match search.
+    # Check if the query asks for exact matches.
     if "exact match" in prompt.lower():
-        search_match = re.search(r'exact matches? of (?:the name|the word)?\s*[\'"]?([\w\s]+)[\'"]?', prompt, re.IGNORECASE)
+        search_match = re.search(r'exact matches? of (?:the name|the word)?\s*[\'"]?(\w+)[\'"]?', prompt, re.IGNORECASE)
         if search_match:
-            search_term = search_match.group(1).strip()
+            search_term = search_match.group(1)
         else:
-            st.error("Could not determine the search term from your query. Please include the term in your query.")
+            st.error("Could not determine the search term from your query. Please include it (e.g., exact matches of the word 'mcculloch').")
             search_term = None
 
         if search_term:
-            # First try to find the term in individual chunks.
             exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
-            if not exact_results:
-                # Fall back to a full text search across the entire document.
-                full_results = search_full_text(st.session_state.chunks, search_term)
-                if full_results:
-                    response_lines = []
-                    for idx, res in enumerate(full_results, start=1):
-                        response_lines.append(f"{idx}. File: {res['file']}\n   {res['snippet']}")
-                    bot_response = "\n\n".join(response_lines)
-                else:
-                    bot_response = f"No exact matches found for '{search_term}' in the document."
-            else:
+            if exact_results:
                 response_lines = []
                 for idx, res in enumerate(exact_results, start=1):
                     response_lines.append(f"{idx}. File: {res['file']}, Page: {res['page']}\n   {res['snippet']}")
                 bot_response = "\n\n".join(response_lines)
+            else:
+                bot_response = "No exact matches found."
             st.session_state.messages.append({"role": "assistant", "content": bot_response})
             with st.chat_message("assistant"):
                 st.markdown(bot_response)
