@@ -316,24 +316,30 @@ def flexible_match(text: str, term: str) -> bool:
     pattern = r'\b' + re.escape(base) + r's?\b'
     return re.search(pattern, text, re.IGNORECASE) is not None
 
-def extract_snippet(text: str, search_term: str, context: int = 50) -> str:
+def extract_snippet(text: str, search_term: str) -> str:
     """
-    Extract a snippet with up to 'context' characters before and after the search term.
-    Supports singular/plural variations.
+    Return the sentence from text that contains the search_term.
+    If no sentence is found, fall back to a context snippet.
     """
+    # First, split text into sentences (using punctuation as delimiters)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    for sentence in sentences:
+        if re.search(r'\b' + re.escape(search_term) + r'\b', sentence, re.IGNORECASE):
+            return sentence.strip()
+    # Fallback: use a character window snippet
+    context = 50
     base = search_term.rstrip("s")
     pattern = r"(?i)(.{{0,{}}}\b{}\b[s]?.{{0,{}}})".format(context, re.escape(base), context)
     match = re.search(pattern, text)
     if match:
         return match.group(1).strip()
-    return text[:200].strip()  # fallback: first 200 characters
+    return text[:200].strip()
 
 def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> List[Dict[str, Any]]:
     """
     For each chunk that contains a variation of the search term,
     extract one snippet per file and page.
-    This groups results by (file, page) so that even if a page was split into multiple chunks,
-    only one snippet is returned.
+    Groups results by (file, page) so that even if a page is split into multiple chunks, only one snippet is returned.
     """
     results = {}
     for chunk in chunks:
@@ -479,13 +485,18 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
     st.write(f"Routing decision: **{query_type}** query")  # Optional debug output
 
     if query_type == "keyword":
-        # Extract the search term using a simple regex.
-        match = re.search(r'(?i)(?:find|search for|mentions?)\s+([\w\-]+)', prompt)
+        # First try to extract a search term within double or single quotes.
+        search_term = None
+        match = re.search(r'["\']([^"\']+)["\']', prompt)
         if match:
             search_term = match.group(1)
         else:
-            # Fallback: use the first word of the query.
-            search_term = prompt.strip().split()[0]
+            # Fallback: use a regex looking for keywords like "find", "search for", or "mentions"
+            match = re.search(r'(?i)(?:find|search for|mentions?)\s+([\w\-]+)', prompt)
+            if match:
+                search_term = match.group(1)
+            else:
+                search_term = prompt.strip().split()[0]
         exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
         if exact_results:
             response_lines = []
@@ -544,4 +555,3 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
-
