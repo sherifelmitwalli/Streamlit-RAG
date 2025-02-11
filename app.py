@@ -612,44 +612,48 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Check if the query is asking about word occurrences or exact matches
-    if ("exact match" in prompt.lower() or 
-        re.search(r'(?:find|show|get|list|count|how many|mentions of|occurrences of)\s+(?:the\s+(?:word|term)\s+)?["\']?(\w+)["\']?', prompt.lower())):
-        
-        # First try to extract the term from exact match pattern
-        search_match = re.search(r'exact matches? of (?:the name|the word)?\s*[\'"]?(.+?)[\'"]?', prompt, re.IGNORECASE)
-        if not search_match:
-            # Then try simpler patterns for word searches
-            search_match = re.search(r'(?:find|show|get|list|count|how many|mentions of|occurrences of)\s+(?:the\s+(?:word|term)\s+)?["\']?(\w+)["\']?', prompt, re.IGNORECASE)
+    # Patterns to identify search queries for any term
+    patterns = [
+        r'(?:exact matches?|find|show|get|list|count|how many|mentions|occurrences) (?:of )?(?:the\s+)?(?:word\s+|term\s+)?[\'"]?([^\'"\n]+?)[\'"]?(?:\s|$)',
+        r'(?:search|look) for [\'"]?([^\'"\n]+?)[\'"]?(?:\s|$)',
+        r'(?:the\s+)?(?:word|term)\s+[\'"]?([^\'"\n]+?)[\'"]?',
+        r'occurrences? of [\'"]?([^\'"\n]+?)[\'"]?(?:\s|$)'
+    ]
+    
+    # Try to identify search term in different patterns
+    search_term = None
+    for pattern in patterns:
+        search_match = re.search(pattern, prompt, re.IGNORECASE)
         if search_match:
-            search_term = search_match.group(1)
-        else:
-            st.error("Could not determine the search term from your query. Please include it (e.g., exact matches of the word 'Chamber of Commerce').")
-            search_term = None
+            search_term = search_match.group(1).strip()
+            break
 
-        if search_term:
-            exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
-            if exact_results:
-                total_mentions = 0
-                response_lines = []
-                for idx, res in enumerate(exact_results, start=1):
-                    snippets = res["snippets"]
-                    file_info = f"{idx}. File: {res['file']}, Page: {res['page']}"
-                    if res["exact_match"]:
-                        file_info += " (Exact Match)"
-                    response_lines.append(f"{file_info}")
-                    
-                    for snippet in snippets:
-                        total_mentions += len(list(re.finditer(rf'\b{re.escape(search_term)}\b', str(snippet), re.IGNORECASE)))
-                        response_lines.append(f"   • {snippet}")
+    if search_term:
+        exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
+        if exact_results:
+            total_mentions = 0
+            response_lines = []
+            for idx, res in enumerate(exact_results, start=1):
+                snippets = res["snippets"]
+                file_info = f"{idx}. File: {res['file']}, Page: {res['page']}"
+                if res["exact_match"]:
+                    file_info += " (Exact Match)"
+                response_lines.append(f"{file_info}")
                 
-                summary = f"Found {total_mentions} total mention(s) of '{search_term}' across {len(exact_results)} sections:\n\n"
-                bot_response = summary + "\n\n".join(response_lines)
-            else:
-                bot_response = "No matches found."
-            st.session_state.messages.append({"role": "assistant", "content": bot_response})
-            with st.chat_message("assistant"):
-                st.markdown(bot_response)
+                for snippet in snippets:
+                    total_mentions += len(list(re.finditer(rf'\b{re.escape(search_term)}\b', str(snippet), re.IGNORECASE)))
+                    response_lines.append(f"   • {snippet}")
+            
+            summary = f"Found {total_mentions} total mention(s) of '{search_term}' across {len(exact_results)} sections:\n\n"
+            bot_response = summary + "\n\n".join(response_lines)
+        else:
+            bot_response = f"No occurrences of '{search_term}' were found in the documents. Please check:\n" + \
+                          "1. The word is spelled correctly\n" + \
+                          "2. The files have been properly uploaded\n" + \
+                          "3. Try searching for part of the word or a related term"
+        st.session_state.messages.append({"role": "assistant", "content": bot_response})
+        with st.chat_message("assistant"):
+            st.markdown(bot_response)
     else:
         file_match = re.search(r'file\s+([A-Za-z0-9\-_]+)', prompt, re.IGNORECASE)
         if file_match:
@@ -707,7 +711,4 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                         st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
-
-
-
 
