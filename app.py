@@ -608,9 +608,15 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Check if the query asks for exact matches.
-    if "exact match" in prompt.lower():
+    # Check if the query is asking about word occurrences or exact matches
+    if ("exact match" in prompt.lower() or 
+        re.search(r'(?:find|show|get|list|count|how many|mentions of|occurrences of)\s+(?:the\s+(?:word|term)\s+)?["\']?(\w+)["\']?', prompt.lower())):
+        
+        # First try to extract the term from exact match pattern
         search_match = re.search(r'exact matches? of (?:the name|the word)?\s*[\'"]?(.+?)[\'"]?', prompt, re.IGNORECASE)
+        if not search_match:
+            # Then try simpler patterns for word searches
+            search_match = re.search(r'(?:find|show|get|list|count|how many|mentions of|occurrences of)\s+(?:the\s+(?:word|term)\s+)?["\']?(\w+)["\']?', prompt, re.IGNORECASE)
         if search_match:
             search_term = search_match.group(1)
         else:
