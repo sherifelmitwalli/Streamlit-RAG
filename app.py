@@ -195,6 +195,7 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dic
             chunks = []
             with pdfplumber.open(file_bytes) as pdf:
                 for i, page in enumerate(pdf.pages):
+                    # Use our custom extraction function for multi-column pages.
                     page_text = extract_pdf_page_text(page)
                     if page_text:
                         page_text = clean_text(page_text)
@@ -363,50 +364,42 @@ def extract_snippet(text: str, search_term: str, context: int = 50) -> str:
         return match.group(1).strip()
     return text[:200].strip()  # fallback: first 200 characters
 
-# -----------------------------
-# Enhanced Exact Matching Functions
-# -----------------------------
-def find_exact_matches_in_chunk_variants(text: str, search_term: str, context: int = 50) -> List[str]:
+def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> List[Dict[str, Any]]:
     """
-    Search for the search_term in text allowing for a simple plural variation (optional trailing "s").
-    Matches are case-insensitive.
-    Returns snippets with up to `context` characters before and after each match.
-    """
-    # If the search term does not already end with 's', allow an optional "s" at the end.
-    if not search_term.endswith('s'):
-        pattern = re.compile(r'\b' + re.escape(search_term) + r's?\b', flags=re.IGNORECASE)
-    else:
-        pattern = re.compile(r'\b' + re.escape(search_term) + r'\b', flags=re.IGNORECASE)
-    
-    snippets = []
-    for match in pattern.finditer(text):
-        start_index = max(0, match.start() - context)
-        end_index = min(len(text), match.end() + context)
-        snippet = text[start_index:end_index].strip()
-        snippets.append(snippet)
-    return snippets
-
-def extract_exact_mentions_enhanced(chunks: List[Dict[str, Any]], search_term: str, context: int = 50) -> List[Dict[str, Any]]:
-    """
-    For each text chunk, use find_exact_matches_in_chunk_variants to get all snippets where the
-    search term appears (handling case, singular/plural variations).
-    Each result includes file metadata.
+    For each chunk, if the normalized text contains all words of the search term,
+    extract a snippet around the matching sequence.
     """
     results = []
     for chunk in chunks:
         original_text = chunk.get("text", "")
-        snippets = find_exact_matches_in_chunk_variants(original_text, search_term, context)
-        if snippets:
+        text_norm = ' '.join(original_text.split())
+        if flexible_match(text_norm, search_term):
+            snippet = extract_snippet(text_norm, search_term)
             file_name = chunk["source"].get("file", "unknown file")
-            page = chunk["source"].get("page", "N/A")
-            for snippet in snippets:
-                results.append({
-                    "file": file_name,
-                    "page": str(page),
-                    "snippet": snippet
-                })
-    results.sort(key=lambda r: (r["file"].lower(), int(r["page"]) if str(r["page"]).isdigit() else 0))
-    return results
+            page = chunk["source"].get("page")
+            if page:
+                page = str(page).strip()
+                m = re.search(r'\d+', page)
+                if m:
+                    page = m.group(0)
+                else:
+                    page = "N/A"
+            else:
+                page = "N/A"
+            results.append({
+                "file": file_name,
+                "page": page,
+                "snippet": snippet
+            })
+    def result_sort_key(item):
+        f = item.get("file", "").lower()
+        p = item.get("page")
+        try:
+            p_num = int(p) if p != "N/A" and str(p).isdigit() else 0
+        except Exception:
+            p_num = 0
+        return (f, p_num)
+    return sorted(results, key=result_sort_key)
 
 # -----------------------------
 # File Upload & Processing
@@ -489,8 +482,7 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
 
     # Check if the query asks for exact matches.
     if "exact match" in prompt.lower():
-        # Attempt to extract the search term from the query.
-        search_match = re.search(r'exact matches? (?:of(?: the)? (?:name|word))?\s*[\'"]?(.+?)[\'"]?(?:\s|$)', prompt, re.IGNORECASE)
+        search_match = re.search(r'exact matches? of (?:the name|the word)?\s*[\'"]?(.+?)[\'"]?', prompt, re.IGNORECASE)
         if search_match:
             search_term = search_match.group(1)
         else:
@@ -498,7 +490,7 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
             search_term = None
 
         if search_term:
-            exact_results = extract_exact_mentions_enhanced(st.session_state.chunks, search_term)
+            exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
             if exact_results:
                 response_lines = []
                 for idx, res in enumerate(exact_results, start=1):
@@ -558,4 +550,3 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
-
