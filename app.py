@@ -105,9 +105,9 @@ def clear_cache() -> None:
 def clean_text(text: str) -> str:
     """
     Clean extracted text by:
-    - Replacing line breaks with spaces.
-    - Removing hyphenation at line breaks.
-    - Collapsing multiple spaces.
+      - Replacing line breaks with spaces.
+      - Removing hyphenation at line breaks.
+      - Collapsing multiple spaces.
     """
     text = text.replace('\n', ' ')
     text = re.sub(r'-\s+', '', text)  # remove hyphenation artifacts
@@ -118,9 +118,6 @@ def clean_text(text: str) -> str:
 # File Processing Functions
 # -----------------------------
 def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any]]:
-    """
-    Process a JSON file and convert it to text chunks with metadata.
-    """
     chunks = []
     try:
         file_bytes.seek(0)
@@ -156,9 +153,6 @@ def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any
     return chunks
 
 def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dict[str, Any]]]:
-    """
-    Processes file bytes and returns a list of chunk dictionaries, each with text and source metadata.
-    """
     ext = file_name.split('.')[-1].lower()
     try:
         if ext == "txt":
@@ -168,7 +162,7 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dic
             return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
         elif ext == "pdf":
             file_bytes.seek(0)
-            pdf_data = file_bytes.read()  # Read PDF bytes
+            pdf_data = file_bytes.read()
             doc = fitz.open(stream=pdf_data, filetype="pdf")
             chunks = []
             for i in range(len(doc)):
@@ -208,9 +202,6 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dic
         return None
 
 def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[List[Dict[str, Any]]]:
-    """
-    Wraps process_file_bytes to read the uploaded file and returns a list of chunk dictionaries.
-    """
     try:
         file_bytes = BytesIO(uploaded_file.read())
         return process_file_bytes(file_bytes, uploaded_file.name)
@@ -268,9 +259,6 @@ def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
         return np.array([])
 
 def find_relevant_context_indices(query: str, text_chunks: List[str], embeddings: np.ndarray, top_k: int = TOP_K) -> List[int]:
-    """
-    Returns the indices of the top_k text_chunks most similar to the query.
-    """
     try:
         response = openai.Embedding.create(
             input=[query],
@@ -306,9 +294,6 @@ def get_chat_response(messages: List[Dict[str, str]], retries: int = MAX_RETRIES
     return None
 
 def sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Sort chunks by file name (alphabetically) and by page number (numerically, if available).
-    """
     def chunk_sort_key(chunk):
         file_name = chunk["source"].get("file", "").lower()
         page = chunk["source"].get("page")
@@ -320,23 +305,22 @@ def sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(chunks, key=chunk_sort_key)
 
 # -----------------------------
-# Flexible Matching Functions
+# Flexible Matching Functions (Keyword Search)
 # -----------------------------
 def flexible_match(text: str, term: str) -> bool:
     """
-    Return True if all words in 'term' appear in 'text' (both normalized).
+    Return True if the term is found in text. This regex is case-insensitive and
+    matches singular/plural (by stripping a trailing "s" from the search term).
     """
-    text_clean = ' '.join(text.lower().split())
-    words = term.lower().split()
-    return all(word in text_clean for word in words)
+    base = term.rstrip("s")
+    pattern = r'\b' + re.escape(base) + r's?\b'
+    return re.search(pattern, text, re.IGNORECASE) is not None
 
 def extract_snippet(text: str, search_term: str, context: int = 50) -> str:
     """
-    Build a regex pattern that finds the search_term words in order with up to 'context'
-    characters on each side. Returns the matching snippet if found; otherwise, a fallback.
+    Extract a snippet with up to 'context' characters before and after the search term.
     """
-    words = search_term.split()
-    pattern = r"(?i)(.{" + str(0) + "," + str(context) + r"}?" + r".*?".join(map(re.escape, words)) + r".{0," + str(context) + r"}?)"
+    pattern = r"(?i)(.{{0,{}}}\b{}\b.{{0,{}}})".format(context, re.escape(search_term), context)
     match = re.search(pattern, text)
     if match:
         return match.group(1).strip()
@@ -344,7 +328,7 @@ def extract_snippet(text: str, search_term: str, context: int = 50) -> str:
 
 def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> List[Dict[str, Any]]:
     """
-    For each chunk, if the normalized text contains all words of the search term,
+    For each chunk, if the normalized text contains the search term,
     extract a snippet around the matching sequence.
     """
     results = []
@@ -358,10 +342,7 @@ def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> Li
             if page:
                 page = str(page).strip()
                 m = re.search(r'\d+', page)
-                if m:
-                    page = m.group(0)
-                else:
-                    page = "N/A"
+                page = m.group(0) if m else "N/A"
             else:
                 page = "N/A"
             results.append({
@@ -378,6 +359,40 @@ def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> Li
             p_num = 0
         return (f, p_num)
     return sorted(results, key=result_sort_key)
+
+# -----------------------------
+# Query Routing Function
+# -----------------------------
+def route_query(query: str) -> str:
+    """
+    Use a small LLM call to determine whether the query is asking for a keyword search or a semantic question.
+    Returns "keyword" if the query is best answered with a keyword search;
+    otherwise returns "semantic".
+    """
+    try:
+        messages = [
+            {"role": "system", "content": (
+                "You are a classifier that determines whether a user query is asking to search for a specific "
+                "word or term (i.e. a keyword search) or if it is a general question requiring semantic understanding. "
+                "If the query asks to 'find', 'search for', or 'mentions' a word or term, reply with 'keyword'. "
+                "Otherwise, reply with 'semantic'."
+            )},
+            {"role": "user", "content": query}
+        ]
+        response = openai.ChatCompletion.create(
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=0
+        )
+        classification = response.choices[0].message.content.strip().lower()
+        if "keyword" in classification:
+            return "keyword"
+        else:
+            return "semantic"
+    except Exception as e:
+        logger.error("Error routing query: " + str(e))
+        # fallback to semantic if an error occurs
+        return "semantic"
 
 # -----------------------------
 # File Upload & Processing
@@ -458,28 +473,37 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Check if the query asks for exact matches.
-    if "exact match" in prompt.lower():
-        search_match = re.search(r'exact matches? of (?:the name|the word)?\s*[\'"]?(.+?)[\'"]?', prompt, re.IGNORECASE)
-        if search_match:
-            search_term = search_match.group(1)
-        else:
-            st.error("Could not determine the search term from your query. Please include it (e.g., exact matches of the word 'Chamber of Commerce').")
-            search_term = None
+    # Use the routing function to decide how to handle the query.
+    query_type = route_query(prompt)
+    st.write(f"Routing decision: **{query_type}** query")  # Optional: display decision
 
-        if search_term:
-            exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
-            if exact_results:
-                response_lines = []
-                for idx, res in enumerate(exact_results, start=1):
-                    response_lines.append(f"{idx}. File: {res['file']}, Page: {res['page']}\n   {res['snippet']}")
-                bot_response = "\n\n".join(response_lines)
-            else:
-                bot_response = "No exact matches found."
-            st.session_state.messages.append({"role": "assistant", "content": bot_response})
-            with st.chat_message("assistant"):
-                st.markdown(bot_response)
+    if query_type == "keyword":
+        # Keyword search using normal text matching.
+        # We assume the user query contains the term to search.
+        # (Optionally, you could parse the query further to extract the search term.)
+        # Here, we simply pick the first word after 'find' or 'search for' or 'mentions'
+        # as a simple heuristic.
+        match = re.search(r'(?i)(?:find|search for|mentions?)\s+([\w\-]+)', prompt)
+        if match:
+            search_term = match.group(1)
+        else:
+            # Fallback: treat the entire prompt as the search term.
+            search_term = prompt.strip().split()[0]
+        exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
+        if exact_results:
+            response_lines = []
+            for idx, res in enumerate(exact_results, start=1):
+                response_lines.append(f"{idx}. File: {res['file']}, Page: {res['page']}\n   {res['snippet']}")
+            bot_response = "\n\n".join(response_lines)
+        else:
+            bot_response = f"No matches found for the term '{search_term}'."
+        # Pass the keyword search results to the RAG chain (if desired) or display directly.
+        st.session_state.messages.append({"role": "assistant", "content": bot_response})
+        with st.chat_message("assistant"):
+            st.markdown(bot_response)
     else:
+        # Semantic retrieval branch using embeddings.
+        # Optionally filter by file if the query mentions a file id.
         file_match = re.search(r'file\s+([A-Za-z0-9\-]+)', prompt, re.IGNORECASE)
         if file_match:
             file_id = file_match.group(1)
@@ -508,10 +532,7 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
         for chunk in relevant_chunks_sorted:
             file_ref = chunk["source"].get("file", "unknown file")
             page_ref = chunk["source"].get("page")
-            if page_ref and str(page_ref).strip().isdigit():
-                ref_str = f"File: {file_ref}, Page: {page_ref}"
-            else:
-                ref_str = f"File: {file_ref}, Page: N/A"
+            ref_str = f"File: {file_ref}, Page: {page_ref}" if page_ref and str(page_ref).strip().isdigit() else f"File: {file_ref}, Page: N/A"
             formatted_context = f"{ref_str}\n{chunk['text']}"
             formatted_contexts.append(formatted_context)
         combined_context = "\n\n".join(formatted_contexts)
@@ -528,3 +549,4 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
+
