@@ -4,7 +4,7 @@ import logging
 import time
 from io import BytesIO
 from typing import List, Optional, Dict, Any
-import zipfile
+import zipfile  # For handling ZIP files
 import fitz  # PyMuPDF for PDF extraction
 import pandas as pd
 import numpy as np
@@ -90,7 +90,7 @@ st.title("Agentic RAG Chatbot")
 st.subheader("Upload one or more files or a folder (as a ZIP file) and ask questions based on their content.")
 
 # -----------------------------
-# Helper Functions
+# Helper: Clear Cache
 # -----------------------------
 def clear_cache() -> None:
     try:
@@ -99,6 +99,9 @@ def clear_cache() -> None:
     except Exception as e:
         logger.error(f"Error clearing cache: {e}")
 
+# -----------------------------
+# Helper: Clean Text
+# -----------------------------
 def clean_text(text: str) -> str:
     """
     Clean extracted text by:
@@ -111,6 +114,9 @@ def clean_text(text: str) -> str:
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
+# -----------------------------
+# File Processing Functions
+# -----------------------------
 def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any]]:
     """
     Process a JSON file and convert it to text chunks with metadata.
@@ -215,6 +221,9 @@ def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -
     finally:
         file_bytes.close()
 
+# -----------------------------
+# Embedding & Chat Functions
+# -----------------------------
 @st.cache_data(show_spinner=False, ttl=3600)
 def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
     try:
@@ -310,6 +319,9 @@ def sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return (file_name, page_num)
     return sorted(chunks, key=chunk_sort_key)
 
+# -----------------------------
+# Flexible Matching Functions
+# -----------------------------
 def flexible_match(text: str, term: str) -> bool:
     """
     Return True if all words in 'term' appear in 'text' (both normalized).
@@ -422,33 +434,6 @@ if uploaded_files and "embeddings" not in st.session_state:
             final_chunks.append(chunk)
     st.session_state.chunks = final_chunks
 
-    # -----------------------------
-    # Download Buttons for PDF Extracted Text
-    # -----------------------------
-    # Group extracted text by PDF file name.
-    pdf_files = {}
-    for chunk in st.session_state.chunks:
-        file_name = chunk["source"].get("file", "")
-        if file_name.lower().endswith(".pdf"):
-            if file_name not in pdf_files:
-                pdf_files[file_name] = []
-            pdf_files[file_name].append(chunk["text"])
-    
-    if pdf_files:
-        st.markdown("### Verify PDF Text Extraction")
-        for pdf_file, texts in pdf_files.items():
-            aggregated_text = "\n\n".join(texts)
-            st.download_button(
-                label=f"Download extracted text for {pdf_file}",
-                data=aggregated_text,
-                file_name=f"extracted_text_{pdf_file}.txt",
-                mime="text/plain"
-            )
-        st.info("Review the extracted PDF text above before embeddings are generated.")
-
-    # -----------------------------
-    # Generating Embeddings
-    # -----------------------------
     text_for_embedding = [chunk["text"] for chunk in st.session_state.chunks]
     with st.spinner("Generating embeddings..."):
         embeddings = generate_embeddings(text_for_embedding)
@@ -543,4 +528,3 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
-
