@@ -153,12 +153,22 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dic
             return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
         elif ext == "pdf":
             file_bytes.seek(0)
-            reader = PyPDF2.PdfReader(file_bytes)
             chunks = []
-            for i, page in enumerate(reader.pages):
-                page_text = page.extract_text()
-                if page_text:
-                    chunks.append({"text": f"File: {file_name} | Page: {i+1}\n{page_text}", "source": {"file": file_name, "page": i+1}})
+            try:
+                import pdfplumber
+            except ImportError:
+                st.error("pdfplumber is not installed. Please install pdfplumber for improved PDF extraction.")
+                return None
+
+            with pdfplumber.open(file_bytes) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    # Adjust x_tolerance and y_tolerance if necessary.
+                    page_text = page.extract_text(x_tolerance=2, y_tolerance=2)
+                    if page_text:
+                        chunks.append({
+                            "text": f"File: {file_name} | Page: {i+1}\n{page_text}",
+                            "source": {"file": file_name, "page": i+1}
+                        })
             return chunks
         elif ext == "csv":
             file_bytes.seek(0)
