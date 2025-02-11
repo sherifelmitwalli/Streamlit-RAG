@@ -3,7 +3,7 @@ import os
 import logging
 import time
 from io import BytesIO
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any, Optional
 import zipfile  # For handling ZIP files
 import fitz  # PyMuPDF for PDF extraction
 import pandas as pd
@@ -484,7 +484,7 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
         if match:
             search_term = match.group(1)
         else:
-            # Fallback: use the first word of the query
+            # Fallback: use the first word of the query.
             search_term = prompt.strip().split()[0]
         exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
         if exact_results:
@@ -544,3 +544,4 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
+
