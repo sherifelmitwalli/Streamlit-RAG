@@ -5,7 +5,7 @@ import time
 from io import BytesIO
 from typing import List, Optional, Dict, Any
 import zipfile  # For handling ZIP files
-import pdfplumber  # For improved PDF extraction
+import fitz  # PyMuPDF for PDF extraction
 import pandas as pd
 import numpy as np
 from pptx import Presentation
@@ -115,30 +115,6 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 # -----------------------------
-# Helper: Extract PDF Page Text for Multi-Column Layouts
-# -----------------------------
-def extract_pdf_page_text(page) -> str:
-    """
-    Extract text from a PDF page by splitting the page into left and right columns.
-    Uses the median x-coordinate of all words to separate columns and then returns
-    the left-column text followed by the right-column text.
-    """
-    try:
-        words = page.extract_words()
-        if not words:
-            return ""
-        xs = [float(word['x0']) for word in words]
-        median_x = np.median(xs)
-        left_words = [word for word in words if float(word['x0']) < median_x]
-        right_words = [word for word in words if float(word['x0']) >= median_x]
-        left_text = " ".join(word["text"] for word in sorted(left_words, key=lambda w: (w['top'], w['x0'])))
-        right_text = " ".join(word["text"] for word in sorted(right_words, key=lambda w: (w['top'], w['x0'])))
-        return left_text + "\n" + right_text
-    except Exception as e:
-        # Fallback if any error occurs
-        return page.extract_text() or ""
-
-# -----------------------------
 # File Processing Functions
 # -----------------------------
 def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any]]:
@@ -192,17 +168,19 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dic
             return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
         elif ext == "pdf":
             file_bytes.seek(0)
+            pdf_data = file_bytes.read()  # Read PDF bytes
+            doc = fitz.open(stream=pdf_data, filetype="pdf")
             chunks = []
-            with pdfplumber.open(file_bytes) as pdf:
-                for i, page in enumerate(pdf.pages):
-                    # Use our custom extraction function for multi-column pages.
-                    page_text = extract_pdf_page_text(page)
-                    if page_text:
-                        page_text = clean_text(page_text)
-                        chunks.append({
-                            "text": f"File: {file_name} | Page: {i+1}\n{page_text}",
-                            "source": {"file": file_name, "page": i+1}
-                        })
+            for i in range(len(doc)):
+                page = doc[i]
+                page_text = page.get_text("text")
+                if page_text:
+                    page_text = clean_text(page_text)
+                    chunks.append({
+                        "text": f"File: {file_name} | Page: {i+1}\n{page_text}",
+                        "source": {"file": file_name, "page": i+1}
+                    })
+            doc.close()
             return chunks
         elif ext == "csv":
             file_bytes.seek(0)
