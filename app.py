@@ -3,7 +3,7 @@ import os
 import logging
 import time
 from io import BytesIO
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 import zipfile  # For handling ZIP files
 import fitz  # PyMuPDF for PDF extraction
 import pandas as pd
@@ -667,4 +667,5 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                         st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
+
 
