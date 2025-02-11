@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 CHUNK_SIZE = 500                  # Maximum characters per text chunk
+OVERLAP = 100                     # Overlap between chunks to prevent term splitting
 MAX_RETRIES = 3                   # Maximum number of API call retries
 RETRY_DELAY = 5                   # Delay between retries in seconds
 EMBEDDING_MODEL = "text-embedding-ada-002"
@@ -386,14 +387,17 @@ if uploaded_files and "embeddings" not in st.session_state:
                     st.session_state.chunks.extend(chunks)
                     st.success(f"Processed file: {uploaded_file.name}")
 
-    # Optionally split large chunks further.
+    # Revised chunking logic: split with overlapping chunks
     final_chunks = []
     for chunk in st.session_state.chunks:
         text = chunk["text"]
         if len(text) > CHUNK_SIZE:
-            for i in range(0, len(text), CHUNK_SIZE):
-                sub_text = text[i:i+CHUNK_SIZE]
+            start = 0
+            while start < len(text):
+                end = start + CHUNK_SIZE
+                sub_text = text[start:end]
                 final_chunks.append({"text": sub_text, "source": chunk["source"]})
+                start += (CHUNK_SIZE - OVERLAP)  # Move pointer with overlap
         else:
             final_chunks.append(chunk)
     st.session_state.chunks = final_chunks
