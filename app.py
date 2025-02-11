@@ -105,9 +105,9 @@ def clear_cache() -> None:
 def clean_text(text: str) -> str:
     """
     Clean extracted text by:
-    - Replacing line breaks with spaces.
-    - Removing hyphenation at line breaks.
-    - Collapsing multiple spaces.
+      - Replacing line breaks with spaces.
+      - Removing hyphenation at line breaks.
+      - Collapsing multiple spaces.
     """
     text = text.replace('\n', ' ')
     text = re.sub(r'-\s+', '', text)  # remove hyphenation artifacts
@@ -120,8 +120,8 @@ def clean_text(text: str) -> str:
 def extract_pdf_page_text(page) -> str:
     """
     Extract text from a PDF page by splitting the page into left and right columns.
-    Uses the median x-coordinate of all words to separate columns and then returns
-    the left-column text followed by the right-column text.
+    Uses the median x-coordinate of all words to separate columns and returns the left-column
+    text followed by the right-column text.
     """
     try:
         words = page.extract_words()
@@ -195,7 +195,6 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dic
             chunks = []
             with pdfplumber.open(file_bytes) as pdf:
                 for i, page in enumerate(pdf.pages):
-                    # Use our custom extraction function for multi-column pages.
                     page_text = extract_pdf_page_text(page)
                     if page_text:
                         page_text = clean_text(page_text)
@@ -342,32 +341,42 @@ def sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(chunks, key=chunk_sort_key)
 
 # -----------------------------
-# Flexible Matching Functions
+# Flexible Matching Functions with Optional Plural Handling
 # -----------------------------
+def optional_plural(word: str) -> str:
+    """
+    Returns a regex pattern for the word that allows an optional trailing "s".
+    For example, 'chamber' becomes 'chamber(s)?'
+    """
+    if word.lower().endswith('s'):
+        return re.escape(word)
+    else:
+        return re.escape(word) + r'(s)?'
+
 def flexible_match(text: str, term: str) -> bool:
     """
-    Return True if all words in 'term' appear in 'text' (both normalized).
+    Return True if the normalized text contains the words in 'term' in order,
+    allowing for an optional trailing "s" on each word.
     """
-    text_clean = ' '.join(text.lower().split())
-    words = term.lower().split()
-    return all(word in text_clean for word in words)
+    pattern = re.compile(r'(?i)' + r".*?".join(optional_plural(word) for word in term.split()))
+    return bool(pattern.search(text))
 
 def extract_snippet(text: str, search_term: str, context: int = 50) -> str:
     """
-    Build a regex pattern that finds the search_term words in order with up to 'context'
-    characters on each side. Returns the matching snippet if found; otherwise, a fallback.
+    Build a regex pattern that finds the search_term words in order (allowing an optional "s")
+    with up to 'context' characters on each side. Returns the matching snippet if found;
+    otherwise, returns a fallback (first 200 characters).
     """
-    words = search_term.split()
-    pattern = r"(?i)(.{" + str(0) + "," + str(context) + r"}?" + r".*?".join(map(re.escape, words)) + r".{0," + str(context) + r"}?)"
+    pattern = r"(?i)(.{" + str(context) + r"}?" + r".*?".join(optional_plural(word) for word in search_term.split()) + r".{0," + str(context) + r"}?)"
     match = re.search(pattern, text)
     if match:
         return match.group(1).strip()
-    return text[:200].strip()  # fallback: first 200 characters
+    return text[:200].strip()
 
 def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> List[Dict[str, Any]]:
     """
-    For each chunk, if the normalized text contains all words of the search term,
-    extract a snippet around the matching sequence.
+    For each chunk, if the normalized text contains the search term (using flexible matching),
+    extract a snippet around the match.
     """
     results = []
     for chunk in chunks:
