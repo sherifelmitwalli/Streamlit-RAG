@@ -5,14 +5,13 @@ import time
 from io import BytesIO
 from typing import List, Optional, Dict, Any
 import zipfile  # For handling ZIP files
-import PyPDF2
 import pandas as pd
 import numpy as np
 from pptx import Presentation
 from sklearn.metrics.pairwise import cosine_similarity
 import openai
 import json
-import re  # For regex extraction
+import re
 
 # -----------------------------
 # Logging & Constants
@@ -29,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 CHUNK_SIZE = 500                  # Maximum characters per text chunk
+OVERLAP_SIZE = int(CHUNK_SIZE * 0.1)  # 10% overlap for splitting large chunks
 MAX_RETRIES = 3                   # Maximum number of API call retries
 RETRY_DELAY = 5                   # Delay between retries in seconds
 EMBEDDING_MODEL = "text-embedding-ada-002"
@@ -89,7 +89,7 @@ st.title("Agentic RAG Chatbot")
 st.subheader("Upload one or more files or a folder (as a ZIP file) and ask questions based on their content.")
 
 # -----------------------------
-# Cache/Clear Helper
+# Helper: Clear Cache
 # -----------------------------
 def clear_cache() -> None:
     try:
@@ -99,12 +99,26 @@ def clear_cache() -> None:
         logger.error(f"Error clearing cache: {e}")
 
 # -----------------------------
+# Helper: Clean Text
+# -----------------------------
+def clean_text(text: str) -> str:
+    """
+    Clean extracted text by:
+    - Replacing line breaks with spaces.
+    - Removing hyphenation at line breaks.
+    - Collapsing multiple spaces.
+    """
+    text = text.replace('\n', ' ')
+    text = re.sub(r'-\s+', '', text)  # remove hyphenation artifacts
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+# -----------------------------
 # File Processing Functions
 # -----------------------------
 def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any]]:
     """
     Process a JSON file and convert it to text chunks with metadata.
-    It looks for keys matching the pattern 'page_' followed by digits to set the page metadata.
     """
     chunks = []
     try:
@@ -125,7 +139,7 @@ def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any
         for key, value in data.items():
             # Use regex to check if the key is of the form "page_<number>"
             if isinstance(key, str) and re.fullmatch(r'page_\d+', key.lower()):
-                page_num = key.split("_")[-1]  # e.g., "1", "2", etc.
+                page_num = key.split("_")[-1]
                 chunk_text = f"File: {file_name} | Page: {page_num}\n{value}"
                 chunks.append({"text": chunk_text, "source": {"file": file_name, "page": page_num}})
             else:
@@ -150,21 +164,20 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dic
         if ext == "txt":
             file_bytes.seek(0)
             text = file_bytes.read().decode("utf-8")
+            text = clean_text(text)
             return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
         elif ext == "pdf":
             file_bytes.seek(0)
             chunks = []
-            try:
-                import pdfplumber
-            except ImportError:
-                st.error("pdfplumber is not installed. Please install pdfplumber for improved PDF extraction.")
-                return None
-
+            # Using pdfplumber for improved PDF extraction.
             with pdfplumber.open(file_bytes) as pdf:
                 for i, page in enumerate(pdf.pages):
-                    # Adjust x_tolerance and y_tolerance if necessary.
-                    page_text = page.extract_text(x_tolerance=2, y_tolerance=2)
+                    # Use layout analysis for better extraction from multi-column PDFs.
+                    page_text = page.extract_text(layout=True)
+                    if not page_text:
+                        page_text = page.extract_text()
                     if page_text:
+                        page_text = clean_text(page_text)
                         chunks.append({
                             "text": f"File: {file_name} | Page: {i+1}\n{page_text}",
                             "source": {"file": file_name, "page": i+1}
@@ -174,6 +187,7 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dic
             file_bytes.seek(0)
             df = pd.read_csv(file_bytes)
             text = df.to_string()
+            text = clean_text(text)
             return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
         elif ext == "pptx":
             file_bytes.seek(0)
@@ -182,6 +196,7 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dic
                 shape.text for slide in presentation.slides 
                 for shape in slide.shapes if hasattr(shape, "text")
             )
+            text = clean_text(text)
             return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
         elif ext == "json":
             return process_json_file(file_bytes, file_name)
@@ -306,15 +321,17 @@ def sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(chunks, key=chunk_sort_key)
 
 def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str,
-                           context_words: int = 3) -> List[Dict[str, Any]]:
+                           context_words: int = 5) -> List[Dict[str, Any]]:
     """
-    Extract all exact occurrences of the search_term (with a small context window)
-    from the provided chunks. Returns a list of dictionaries with file, page, and snippet.
+    Extract all occurrences of the search_term (with a small context window)
+    from the provided chunks. This function cleans the text before matching,
+    which helps handle issues like extra whitespace or hyphenation.
     """
     pattern = rf'((?:\S+\s+){{0,{context_words}}}{re.escape(search_term)}(?:\s+\S+){{0,{context_words}}})'
     results = []
     for chunk in chunks:
-        text = chunk.get("text", "")
+        # Clean the text before matching
+        text = clean_text(chunk.get("text", ""))
         for match in re.finditer(pattern, text, re.IGNORECASE):
             snippet = ' '.join(match.group(0).split())  # Collapse extra whitespace/newlines
             file_name = chunk["source"].get("file", "unknown file")
@@ -386,12 +403,13 @@ if uploaded_files and "embeddings" not in st.session_state:
                     st.session_state.chunks.extend(chunks)
                     st.success(f"Processed file: {uploaded_file.name}")
 
-    # Optionally split large chunks further.
+    # Optionally split large chunks further with overlap to help preserve context.
     final_chunks = []
     for chunk in st.session_state.chunks:
         text = chunk["text"]
         if len(text) > CHUNK_SIZE:
-            for i in range(0, len(text), CHUNK_SIZE):
+            # Use overlap to ensure no terms are split across chunks.
+            for i in range(0, len(text), CHUNK_SIZE - OVERLAP_SIZE):
                 sub_text = text[i:i+CHUNK_SIZE]
                 final_chunks.append({"text": sub_text, "source": chunk["source"]})
         else:
