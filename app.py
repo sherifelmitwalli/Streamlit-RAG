@@ -29,11 +29,11 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 CHUNK_SIZE = 500                  # Maximum characters per text chunk
-OVERLAP_SIZE = int(CHUNK_SIZE * 0.1)  # 10% overlap when splitting large chunks
+OVERLAP_SIZE = int(CHUNK_SIZE * 0.2)  # 20% overlap for better context
 MAX_RETRIES = 3                   # Maximum number of API call retries
 RETRY_DELAY = 5                   # Delay between retries in seconds
 EMBEDDING_MODEL = "text-embedding-ada-002"
-TOP_K = 3                         # Number of top relevant contexts to retrieve
+TOP_K = 5                         # Increased from 3 to 5 for better coverage
 
 # -----------------------------
 # OpenAI & Secrets Setup
@@ -104,19 +104,182 @@ def clear_cache() -> None:
 # -----------------------------
 def clean_text(text: str) -> str:
     """
-    Clean extracted text by:
-    - Replacing line breaks with spaces.
-    - Removing hyphenation at line breaks.
-    - Collapsing multiple spaces.
+    Enhanced text cleaning:
+    - Normalizes whitespace
+    - Removes hyphenation artifacts
+    - Preserves sentence boundaries
+    - Handles common PDF artifacts
     """
-    text = text.replace('\n', ' ')
-    text = re.sub(r'-\s+', '', text)  # remove hyphenation artifacts
-    text = re.sub(r'\s+', ' ', text)
+    # Remove PDF artifacts and normalize whitespace
+    text = re.sub(r'\f', ' ', text)  # Form feed
+    text = re.sub(r'(?<=[a-z])-\s*\n\s*(?=[a-z])', '', text)  # Remove hyphenation
+    text = re.sub(r'\s*\n\s*', ' ', text)  # Normalize line breaks
+    text = re.sub(r'\s+', ' ', text)  # Collapse multiple spaces
+    text = re.sub(r'(?<=[.!?])\s+', '\n', text)  # Preserve sentence boundaries
     return text.strip()
 
 # -----------------------------
-# File Processing Functions
+# Text Processing Functions
 # -----------------------------
+def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = OVERLAP_SIZE) -> List[str]:
+    """
+    Improved chunking strategy that preserves sentences and ensures proper context.
+    """
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    chunks = []
+    current_chunk = []
+    current_length = 0
+    last_sentences = []  # Keep track of last sentences for overlap
+    
+    for sentence in sentences:
+        sentence_length = len(sentence)
+        
+        # If this sentence alone exceeds chunk size, split it
+        if sentence_length > chunk_size:
+            if current_chunk:  # First store any accumulated chunk
+                chunks.append(' '.join(current_chunk))
+                last_sentences = current_chunk[-2:] if len(current_chunk) > 2 else current_chunk
+                current_chunk = []
+                current_length = 0
+            
+            # Split long sentence while preserving words
+            words = sentence.split()
+            current_words = []
+            current_word_count = 0
+            for word in words:
+                if current_word_count + len(word) > chunk_size:
+                    if current_words:
+                        chunks.append(' '.join(current_words))
+                    current_words = [word]
+                    current_word_count = len(word)
+                else:
+                    current_words.append(word)
+                    current_word_count += len(word) + 1
+            if current_words:
+                chunks.append(' '.join(current_words))
+            continue
+            
+        # Normal sentence processing
+        if current_length + sentence_length <= chunk_size:
+            current_chunk.append(sentence)
+            current_length += sentence_length + 1  # +1 for space
+        else:
+            if current_chunk:
+                chunks.append(' '.join(current_chunk))
+                # Keep last sentences for overlap
+                last_sentences = current_chunk[-2:] if len(current_chunk) > 2 else current_chunk
+                # Start new chunk with overlap
+                current_chunk = last_sentences + [sentence]
+                current_length = sum(len(s) + 1 for s in current_chunk)
+            else:
+                # If we have no current chunk but the sentence is small enough
+                current_chunk = [sentence]
+                current_length = sentence_length
+                
+    # Don't forget the last chunk
+    if current_chunk:
+        chunks.append(' '.join(current_chunk))
+    
+    return chunks
+
+def process_pdf_blocks(doc: fitz.Document, file_name: str) -> List[Dict[str, Any]]:
+    """
+    Enhanced PDF processing using PyMuPDF's block extraction for better layout handling.
+    """
+    chunks = []
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        # Extract text blocks with layout information
+        blocks = page.get_text("dict")["blocks"]
+        page_text = []
+        
+        for block in blocks:
+            if block.get("type") == 0:  # Type 0 is text
+                block_text = []
+                for line in block.get("lines", []):
+                    line_text = []
+                    for span in line.get("spans", []):
+                        text = span.get("text", "").strip()
+                        if text:
+                            line_text.append(text)
+                    if line_text:
+                        block_text.append(" ".join(line_text))
+                if block_text:
+                    page_text.append(" ".join(block_text))
+        
+        if page_text:
+            text = clean_text("\n".join(page_text))
+            # Split into smaller chunks while preserving context
+            text_chunks = chunk_text(text)
+            for chunk in text_chunks:
+                chunks.append({
+                    "text": f"File: {file_name} | Page: {page_num + 1}\n{chunk}",
+                    "source": {"file": file_name, "page": page_num + 1}
+                })
+    
+    return chunks
+
+def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    Enhanced file processing with improved text extraction and chunking.
+    """
+    ext = file_name.split('.')[-1].lower()
+    try:
+        if ext == "txt":
+            file_bytes.seek(0)
+            text = file_bytes.read().decode("utf-8")
+            text = clean_text(text)
+            chunks = []
+            for chunk in chunk_text(text):
+                chunks.append({
+                    "text": f"File: {file_name}\n{chunk}",
+                    "source": {"file": file_name}
+                })
+            return chunks
+        elif ext == "pdf":
+            file_bytes.seek(0)
+            pdf_data = file_bytes.read()
+            doc = fitz.open(stream=pdf_data, filetype="pdf")
+            chunks = process_pdf_blocks(doc, file_name)
+            doc.close()
+            return chunks
+        elif ext == "csv":
+            file_bytes.seek(0)
+            df = pd.read_csv(file_bytes)
+            text = df.to_string()
+            text = clean_text(text)
+            chunks = []
+            for chunk in chunk_text(text):
+                chunks.append({
+                    "text": f"File: {file_name}\n{chunk}",
+                    "source": {"file": file_name}
+                })
+            return chunks
+        elif ext == "pptx":
+            file_bytes.seek(0)
+            presentation = Presentation(file_bytes)
+            text = "\n".join(
+                shape.text for slide in presentation.slides 
+                for shape in slide.shapes if hasattr(shape, "text")
+            )
+            text = clean_text(text)
+            chunks = []
+            for chunk in chunk_text(text):
+                chunks.append({
+                    "text": f"File: {file_name}\n{chunk}",
+                    "source": {"file": file_name}
+                })
+            return chunks
+        elif ext == "json":
+            return process_json_file(file_bytes, file_name)
+        else:
+            st.error(f"Unsupported file extension: {ext} for file {file_name}")
+            return None
+    except Exception as e:
+        logger.error(f"Error processing file {file_name}: {str(e)}", exc_info=True)
+        st.error(f"Error processing file {file_name}. Error: {str(e)}")
+        return None
+
 def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any]]:
     """
     Process a JSON file and convert it to text chunks with metadata.
@@ -140,76 +303,36 @@ def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any
         for key, value in data.items():
             if isinstance(key, str) and re.fullmatch(r'page_\d+', key.lower()):
                 page_num = key.split("_")[-1]
-                chunk_text = f"File: {file_name} | Page: {page_num}\n{value}"
-                chunks.append({"text": chunk_text, "source": {"file": file_name, "page": page_num}})
+                text = json.dumps(value, indent=2) if isinstance(value, (dict, list)) else str(value)
+                chunks.extend([{
+                    "text": f"File: {file_name} | Page: {page_num}\n{chunk}",
+                    "source": {"file": file_name, "page": page_num}
+                } for chunk in chunk_text(text)])
             else:
-                chunk_text = f"File: {file_name} | {key}\n{value}"
-                chunks.append({"text": chunk_text, "source": {"file": file_name, "key": key}})
+                text = json.dumps(value, indent=2) if isinstance(value, (dict, list)) else str(value)
+                chunks.extend([{
+                    "text": f"File: {file_name} | Key: {key}\n{chunk}",
+                    "source": {"file": file_name, "key": key}
+                } for chunk in chunk_text(text)])
     elif isinstance(data, list):
         for index, item in enumerate(data, start=1):
-            chunk_text = f"File: {file_name} | Item {index}\n{json.dumps(item, indent=2)}"
-            chunks.append({"text": chunk_text, "source": {"file": file_name, "item": index}})
+            text = json.dumps(item, indent=2)
+            chunks.extend([{
+                "text": f"File: {file_name} | Item: {index}\n{chunk}",
+                "source": {"file": file_name, "item": index}
+            } for chunk in chunk_text(text)])
     else:
-        chunk_text = f"File: {file_name}\n{json.dumps(data, indent=2)}"
-        chunks.append({"text": chunk_text, "source": {"file": file_name}})
+        text = json.dumps(data, indent=2)
+        chunks.extend([{
+            "text": f"File: {file_name}\n{chunk}",
+            "source": {"file": file_name}
+        } for chunk in chunk_text(text)])
     
     return chunks
 
-def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dict[str, Any]]]:
-    """
-    Processes file bytes and returns a list of chunk dictionaries, each with text and source metadata.
-    """
-    ext = file_name.split('.')[-1].lower()
-    try:
-        if ext == "txt":
-            file_bytes.seek(0)
-            text = file_bytes.read().decode("utf-8")
-            text = clean_text(text)
-            return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
-        elif ext == "pdf":
-            file_bytes.seek(0)
-            pdf_data = file_bytes.read()  # Read PDF bytes
-            doc = fitz.open(stream=pdf_data, filetype="pdf")
-            chunks = []
-            for i in range(len(doc)):
-                page = doc[i]
-                page_text = page.get_text("text")
-                if page_text:
-                    page_text = clean_text(page_text)
-                    chunks.append({
-                        "text": f"File: {file_name} | Page: {i+1}\n{page_text}",
-                        "source": {"file": file_name, "page": i+1}
-                    })
-            doc.close()
-            return chunks
-        elif ext == "csv":
-            file_bytes.seek(0)
-            df = pd.read_csv(file_bytes)
-            text = df.to_string()
-            text = clean_text(text)
-            return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
-        elif ext == "pptx":
-            file_bytes.seek(0)
-            presentation = Presentation(file_bytes)
-            text = "\n".join(
-                shape.text for slide in presentation.slides 
-                for shape in slide.shapes if hasattr(shape, "text")
-            )
-            text = clean_text(text)
-            return [{"text": f"File: {file_name}\n{text}", "source": {"file": file_name}}]
-        elif ext == "json":
-            return process_json_file(file_bytes, file_name)
-        else:
-            st.error(f"Unsupported file extension: {ext} for file {file_name}")
-            return None
-    except Exception as e:
-        logger.error(f"Error processing file {file_name}: {str(e)}", exc_info=True)
-        st.error(f"Error processing file {file_name}. Error: {str(e)}")
-        return None
-
 def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[List[Dict[str, Any]]]:
     """
-    Wraps process_file_bytes to read the uploaded file and returns a list of chunk dictionaries.
+    Process uploaded file and handle any errors.
     """
     try:
         file_bytes = BytesIO(uploaded_file.read())
@@ -222,10 +345,13 @@ def process_file(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -
         file_bytes.close()
 
 # -----------------------------
-# Embedding & Chat Functions
+# Embedding & Search Functions
 # -----------------------------
 @st.cache_data(show_spinner=False, ttl=3600)
 def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
+    """
+    Generate embeddings for text chunks with improved error handling and rate limiting.
+    """
     try:
         batch_size = 20
         all_embeddings = []
@@ -233,35 +359,28 @@ def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
             batch = [chunk.strip() for chunk in text_chunks[i:i + batch_size] if chunk.strip()]
             if not batch:
                 continue
-            try:
-                response = openai.Embedding.create(
-                    input=batch,
-                    model=EMBEDDING_MODEL
-                )
-                batch_embeddings = [data['embedding'] for data in response['data']]
-                all_embeddings.extend(batch_embeddings)
-                if i + batch_size < len(text_chunks):
-                    time.sleep(0.5)
-            except openai.error.RateLimitError:
-                st.warning("Rate limit reached. Waiting before retrying...")
-                time.sleep(20)
-                response = openai.Embedding.create(
-                    input=batch,
-                    model=EMBEDDING_MODEL
-                )
-                batch_embeddings = [data['embedding'] for data in response['data']]
-                all_embeddings.extend(batch_embeddings)
+            
+            for attempt in range(MAX_RETRIES):
+                try:
+                    response = openai.Embedding.create(
+                        input=batch,
+                        model=EMBEDDING_MODEL
+                    )
+                    batch_embeddings = [data['embedding'] for data in response['data']]
+                    all_embeddings.extend(batch_embeddings)
+                    if i + batch_size < len(text_chunks):
+                        time.sleep(0.5)  # Rate limiting
+                    break
+                except openai.error.RateLimitError:
+                    if attempt < MAX_RETRIES - 1:
+                        st.warning(f"Rate limit reached. Waiting {RETRY_DELAY} seconds...")
+                        time.sleep(RETRY_DELAY * (attempt + 1))  # Exponential backoff
+                    else:
+                        raise
+        
         if not all_embeddings:
             raise ValueError("No valid embeddings were generated")
         return np.array(all_embeddings)
-    except openai.error.AuthenticationError:
-        logger.error("OpenAI API authentication failed")
-        st.error("Failed to authenticate with OpenAI API. Please check your API key configuration.")
-        return np.array([])
-    except openai.error.InvalidRequestError as e:
-        logger.error(f"Invalid request to OpenAI API: {e}")
-        st.error(f"Invalid request: {str(e)}")
-        return np.array([])
     except Exception as e:
         logger.error(f"Error generating embeddings: {str(e)}", exc_info=True)
         st.error(f"Failed to generate embeddings: {str(e)}")
@@ -269,115 +388,133 @@ def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
 
 def find_relevant_context_indices(query: str, text_chunks: List[str], embeddings: np.ndarray, top_k: int = TOP_K) -> List[int]:
     """
-    Returns the indices of the top_k text_chunks most similar to the query.
+    Find relevant context using improved similarity search.
     """
     try:
+        # Get query embedding
         response = openai.Embedding.create(
             input=[query],
             model=EMBEDDING_MODEL
         )
         query_embedding = np.array(response['data'][0]['embedding']).reshape(1, -1)
+        
+        # Calculate similarities
         similarities = cosine_similarity(query_embedding, embeddings)[0]
-        top_indices = similarities.argsort()[-top_k:][::-1]
-        return list(top_indices)
+        
+        # Get top k indices with minimum similarity threshold
+        min_similarity = 0.3  # Minimum similarity threshold
+        mask = similarities >= min_similarity
+        filtered_indices = np.where(mask)[0]
+        
+        if len(filtered_indices) > 0:
+            # Sort by similarity and take top_k
+            top_indices = filtered_indices[np.argsort(similarities[filtered_indices])[-top_k:][::-1]]
+            return list(top_indices)
+        else:
+            # Fallback to standard top_k if no chunks meet threshold
+            top_indices = similarities.argsort()[-top_k:][::-1]
+            return list(top_indices)
+            
     except Exception as e:
         logger.error(f"Error finding relevant context: {e}", exc_info=True)
         st.error("Failed to retrieve relevant context. Please try again later.")
         return []
 
-def get_chat_response(messages: List[Dict[str, str]], retries: int = MAX_RETRIES, delay: int = RETRY_DELAY) -> Optional[str]:
-    for attempt in range(retries):
-        try:
-            response = openai.ChatCompletion.create(
-                model=MODEL_NAME,
-                messages=messages
-            )
-            return response.choices[0]["message"]["content"]
-        except openai.error.RateLimitError:
-            if attempt < retries - 1:
-                st.warning(f"Rate limit exceeded. Retrying in {delay} seconds...")
-                time.sleep(delay)
-            else:
-                st.error("Rate limit exceeded. Please try again later.")
-        except Exception as e:
-            logger.error(f"OpenAI API error: {e}", exc_info=True)
-            st.error("An error occurred while generating the response. Please try again later.")
-            return None
-    return None
+def extract_snippets(text: str, search_terms: List[str], context: int = 100) -> List[str]:
+    """
+    Extract multiple snippets for a list of search terms with improved context.
+    """
+    snippets = []
+    text_lower = text.lower()
+    
+    for term in search_terms:
+        term_lower = term.lower()
+        matches = list(re.finditer(rf'\b{re.escape(term_lower)}\b', text_lower))
+        
+        for match in matches:
+            start = max(0, match.start() - context)
+            end = min(len(text), match.end() + context)
+            
+            # Expand to word boundaries
+            if start > 0:
+                start = text.rfind(' ', 0, start) + 1
+            if end < len(text):
+                end = text.find(' ', end)
+                if end == -1:
+                    end = len(text)
+            
+            snippet = text[start:end].strip()
+            if snippet:
+                # Add ellipsis if snippet is truncated
+                if start > 0:
+                    snippet = "..." + snippet
+                if end < len(text):
+                    snippet = snippet + "..."
+                snippets.append(snippet)
+    
+    return snippets
 
-def sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def flexible_match(text: str, term: str) -> Tuple[bool, float]:
     """
-    Sort chunks by file name (alphabetically) and by page number (numerically, if available).
-    """
-    def chunk_sort_key(chunk):
-        file_name = chunk["source"].get("file", "").lower()
-        page = chunk["source"].get("page")
-        try:
-            page_num = int(page) if page is not None and str(page).strip().isdigit() else 0
-        except Exception:
-            page_num = 0
-        return (file_name, page_num)
-    return sorted(chunks, key=chunk_sort_key)
-
-# -----------------------------
-# Flexible Matching Functions
-# -----------------------------
-def flexible_match(text: str, term: str) -> bool:
-    """
-    Return True if all words in 'term' appear in 'text' (both normalized).
+    Enhanced matching with word boundaries and similarity scoring.
     """
     text_clean = ' '.join(text.lower().split())
     words = term.lower().split()
-    return all(word in text_clean for word in words)
+    
+    # Check for exact word matches with word boundaries
+    word_matches = 0
+    for word in words:
+        pattern = r'\b' + re.escape(word) + r'\b'
+        if re.search(pattern, text_clean):
+            word_matches += 1
+    
+    match_score = word_matches / len(words)
+    exact_match = match_score == 1.0
+    
+    # For longer terms (>4 chars), try fuzzy matching if exact match fails
+    if not exact_match and len(term) > 4:
+        for text_word in text_clean.split():
+            if len(text_word) > 4:
+                # Check for common prefixes/suffixes and similar length
+                if (text_word.startswith(term[:3]) or text_word.endswith(term[-3:])) and \
+                   abs(len(text_word) - len(term)) <= 2:
+                    match_score = max(match_score, 0.8)
+    
+    return exact_match, match_score
 
-def extract_snippet(text: str, search_term: str, context: int = 50) -> str:
+def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str, min_score: float = 0.8) -> List[Dict[str, Any]]:
     """
-    Build a regex pattern that finds the search_term words in order with up to 'context'
-    characters on each side. Returns the matching snippet if found; otherwise, a fallback.
-    """
-    words = search_term.split()
-    pattern = r"(?i)(.{" + str(0) + "," + str(context) + r"}?" + r".*?".join(map(re.escape, words)) + r".{0," + str(context) + r"}?)"
-    match = re.search(pattern, text)
-    if match:
-        return match.group(1).strip()
-    return text[:200].strip()  # fallback: first 200 characters
-
-def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> List[Dict[str, Any]]:
-    """
-    For each chunk, if the normalized text contains all words of the search term,
-    extract a snippet around the matching sequence.
+    Enhanced exact mention extraction with better context and scoring.
     """
     results = []
+    search_words = search_term.lower().split()
+    
     for chunk in chunks:
         original_text = chunk.get("text", "")
-        text_norm = ' '.join(original_text.split())
-        if flexible_match(text_norm, search_term):
-            snippet = extract_snippet(text_norm, search_term)
-            file_name = chunk["source"].get("file", "unknown file")
-            page = chunk["source"].get("page")
-            if page:
-                page = str(page).strip()
-                m = re.search(r'\d+', page)
-                if m:
-                    page = m.group(0)
+        exact_match, match_score = flexible_match(original_text, search_term)
+        
+        if match_score >= min_score:
+            snippets = extract_snippets(original_text, search_words)
+            if snippets:
+                file_name = chunk["source"].get("file", "unknown file")
+                page = chunk["source"].get("page")
+                if page:
+                    page = str(page).strip()
+                    m = re.search(r'\d+', page)
+                    page = m.group(0) if m else "N/A"
                 else:
                     page = "N/A"
-            else:
-                page = "N/A"
-            results.append({
-                "file": file_name,
-                "page": page,
-                "snippet": snippet
-            })
-    def result_sort_key(item):
-        f = item.get("file", "").lower()
-        p = item.get("page")
-        try:
-            p_num = int(p) if p != "N/A" and str(p).isdigit() else 0
-        except Exception:
-            p_num = 0
-        return (f, p_num)
-    return sorted(results, key=result_sort_key)
+                
+                results.append({
+                    "file": file_name,
+                    "page": page,
+                    "snippets": snippets,
+                    "score": match_score,
+                    "exact_match": exact_match
+                })
+    
+    # Sort by score (descending), exact match status, and then file/page
+    return sorted(results, key=lambda x: (-x["score"], -int(x["exact_match"]), x["file"].lower(), int(x["page"]) if x["page"].isdigit() else float('inf')))
 
 # -----------------------------
 # File Upload & Processing
@@ -421,19 +558,7 @@ if uploaded_files and "embeddings" not in st.session_state:
                 if chunks:
                     st.session_state.chunks.extend(chunks)
                     st.success(f"Processed file: {uploaded_file.name}")
-
-    # Optionally split large chunks further with overlap to help preserve context.
-    final_chunks = []
-    for chunk in st.session_state.chunks:
-        text = chunk["text"]
-        if len(text) > CHUNK_SIZE:
-            for i in range(0, len(text), CHUNK_SIZE - OVERLAP_SIZE):
-                sub_text = text[i:i+CHUNK_SIZE]
-                final_chunks.append({"text": sub_text, "source": chunk["source"]})
-        else:
-            final_chunks.append(chunk)
-    st.session_state.chunks = final_chunks
-
+    
     text_for_embedding = [chunk["text"] for chunk in st.session_state.chunks]
     with st.spinner("Generating embeddings..."):
         embeddings = generate_embeddings(text_for_embedding)
@@ -472,15 +597,21 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
             if exact_results:
                 response_lines = []
                 for idx, res in enumerate(exact_results, start=1):
-                    response_lines.append(f"{idx}. File: {res['file']}, Page: {res['page']}\n   {res['snippet']}")
+                    snippets = res["snippets"]
+                    file_info = f"{idx}. File: {res['file']}, Page: {res['page']}"
+                    if res["exact_match"]:
+                        file_info += " (Exact Match)"
+                    response_lines.append(f"{file_info}")
+                    for snippet in snippets:
+                        response_lines.append(f"   • {snippet}")
                 bot_response = "\n\n".join(response_lines)
             else:
-                bot_response = "No exact matches found."
+                bot_response = "No matches found."
             st.session_state.messages.append({"role": "assistant", "content": bot_response})
             with st.chat_message("assistant"):
                 st.markdown(bot_response)
     else:
-        file_match = re.search(r'file\s+([A-Za-z0-9\-]+)', prompt, re.IGNORECASE)
+        file_match = re.search(r'file\s+([A-Za-z0-9\-_]+)', prompt, re.IGNORECASE)
         if file_match:
             file_id = file_match.group(1)
             filtered_indices = [
@@ -502,29 +633,38 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
 
         with st.spinner("Retrieving relevant context..."):
             top_indices = find_relevant_context_indices(prompt, filtered_text_chunks, filtered_embeddings)
-        relevant_chunks = [filtered_chunks[i] for i in top_indices]
-        relevant_chunks_sorted = sort_chunks(relevant_chunks)
-        formatted_contexts = []
-        for chunk in relevant_chunks_sorted:
-            file_ref = chunk["source"].get("file", "unknown file")
-            page_ref = chunk["source"].get("page")
-            if page_ref and str(page_ref).strip().isdigit():
-                ref_str = f"File: {file_ref}, Page: {page_ref}"
-            else:
-                ref_str = f"File: {file_ref}, Page: N/A"
-            formatted_context = f"{ref_str}\n{chunk['text']}"
-            formatted_contexts.append(formatted_context)
-        combined_context = "\n\n".join(formatted_contexts)
+            
+        if not top_indices:
+            st.error("Could not find relevant context. Please try rephrasing your question.")
+            st.session_state.messages.append({"role": "assistant", "content": "Could not find relevant context. Please try rephrasing your question."})
+            with st.chat_message("assistant"):
+                st.markdown("Could not find relevant context. Please try rephrasing your question.")
+        else:
+            relevant_chunks = [filtered_chunks[i] for i in top_indices]
+            formatted_contexts = []
+            
+            for chunk in relevant_chunks:
+                file_ref = chunk["source"].get("file", "unknown file")
+                page_ref = chunk["source"].get("page")
+                if page_ref and str(page_ref).strip().isdigit():
+                    ref_str = f"File: {file_ref}, Page: {page_ref}"
+                else:
+                    ref_str = f"File: {file_ref}"
+                formatted_context = f"{ref_str}\n{chunk['text']}"
+                formatted_contexts.append(formatted_context)
+                
+            combined_context = "\n\n".join(formatted_contexts)
 
-        with st.spinner("Generating response..."):
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": f"Context:\n{combined_context}\n\nQuestion: {prompt}"}
-            ]
-            bot_response = get_chat_response(messages)
-            if bot_response:
-                st.session_state.messages.append({"role": "assistant", "content": bot_response})
-                with st.chat_message("assistant"):
-                    st.markdown(bot_response)
+            with st.spinner("Generating response..."):
+                messages = [
+                    {"role": "system", "content": "You are a helpful assistant. Always cite the specific file and page numbers when referring to information from the documents."},
+                    {"role": "user", "content": f"Context:\n{combined_context}\n\nQuestion: {prompt}"}
+                ]
+                bot_response = get_chat_response(messages)
+                if bot_response:
+                    st.session_state.messages.append({"role": "assistant", "content": bot_response})
+                    with st.chat_message("assistant"):
+                        st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
+
