@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 CHUNK_SIZE = 500                  # Maximum characters per text chunk
-OVERLAP = 100                     # Overlap between chunks to prevent term splitting
+OVERLAP = 150                     # Overlap between chunks to help preserve phrases
 MAX_RETRIES = 3                   # Maximum number of API call retries
 RETRY_DELAY = 5                   # Delay between retries in seconds
 EMBEDDING_MODEL = "text-embedding-ada-002"
@@ -387,20 +387,26 @@ if uploaded_files and "embeddings" not in st.session_state:
                     st.session_state.chunks.extend(chunks)
                     st.success(f"Processed file: {uploaded_file.name}")
 
-    # Revised chunking logic: split with overlapping chunks
+    # Revised chunking logic:
+    # Normalize text (collapse whitespace) and split with overlapping chunks.
     final_chunks = []
     for chunk in st.session_state.chunks:
         text = chunk["text"]
-        if len(text) > CHUNK_SIZE:
+        # Normalize the text so that extra spaces and line breaks are removed.
+        normalized_text = ' '.join(text.split())
+        if len(normalized_text) > CHUNK_SIZE:
             start = 0
-            while start < len(text):
+            while start < len(normalized_text):
                 end = start + CHUNK_SIZE
-                sub_text = text[start:end]
+                sub_text = normalized_text[start:end]
                 final_chunks.append({"text": sub_text, "source": chunk["source"]})
-                start += (CHUNK_SIZE - OVERLAP)  # Move pointer with overlap
+                start += (CHUNK_SIZE - OVERLAP)  # Advance with overlap to help preserve phrases
         else:
-            final_chunks.append(chunk)
+            final_chunks.append({"text": normalized_text, "source": chunk["source"]})
     st.session_state.chunks = final_chunks
+
+    # Optional: For debugging purposes, display a snippet of extracted text.
+    # st.write("Extracted Chunks (Debug):", st.session_state.chunks)
 
     text_for_embedding = [chunk["text"] for chunk in st.session_state.chunks]
     with st.spinner("Generating embeddings..."):
