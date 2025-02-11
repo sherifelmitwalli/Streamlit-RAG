@@ -5,6 +5,7 @@ import time
 from io import BytesIO
 from typing import List, Optional, Dict, Any
 import zipfile  # For handling ZIP files
+import pdfplumber  # Added import for PDF extraction
 import pandas as pd
 import numpy as np
 from pptx import Presentation
@@ -510,4 +511,3 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
-
