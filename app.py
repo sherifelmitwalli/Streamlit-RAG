@@ -115,6 +115,30 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 # -----------------------------
+# Helper: Extract PDF Page Text for Multi-Column Layouts
+# -----------------------------
+def extract_pdf_page_text(page) -> str:
+    """
+    Extract text from a PDF page by splitting the page into left and right columns.
+    Uses the median x-coordinate of all words to separate columns and then returns
+    the left-column text followed by the right-column text.
+    """
+    try:
+        words = page.extract_words()
+        if not words:
+            return ""
+        xs = [float(word['x0']) for word in words]
+        median_x = np.median(xs)
+        left_words = [word for word in words if float(word['x0']) < median_x]
+        right_words = [word for word in words if float(word['x0']) >= median_x]
+        left_text = " ".join(word["text"] for word in sorted(left_words, key=lambda w: (w['top'], w['x0'])))
+        right_text = " ".join(word["text"] for word in sorted(right_words, key=lambda w: (w['top'], w['x0'])))
+        return left_text + "\n" + right_text
+    except Exception as e:
+        # Fallback if any error occurs
+        return page.extract_text() or ""
+
+# -----------------------------
 # File Processing Functions
 # -----------------------------
 def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any]]:
@@ -138,7 +162,6 @@ def process_json_file(file_bytes: BytesIO, file_name: str) -> List[Dict[str, Any
     
     if isinstance(data, dict):
         for key, value in data.items():
-            # Use regex to check if the key is of the form "page_<number>"
             if isinstance(key, str) and re.fullmatch(r'page_\d+', key.lower()):
                 page_num = key.split("_")[-1]
                 chunk_text = f"File: {file_name} | Page: {page_num}\n{value}"
@@ -170,13 +193,10 @@ def process_file_bytes(file_bytes: BytesIO, file_name: str) -> Optional[List[Dic
         elif ext == "pdf":
             file_bytes.seek(0)
             chunks = []
-            # Using pdfplumber for improved PDF extraction.
             with pdfplumber.open(file_bytes) as pdf:
                 for i, page in enumerate(pdf.pages):
-                    # Use layout analysis for better extraction from multi-column PDFs.
-                    page_text = page.extract_text(layout=True)
-                    if not page_text:
-                        page_text = page.extract_text()
+                    # Use our custom extraction function for multi-column pages.
+                    page_text = extract_pdf_page_text(page)
                     if page_text:
                         page_text = clean_text(page_text)
                         chunks.append({
@@ -338,7 +358,6 @@ def extract_snippet(text: str, search_term: str, context: int = 50) -> str:
     characters on each side. Returns the matching snippet if found; otherwise, a fallback.
     """
     words = search_term.split()
-    # Build a pattern that looks for the words in order with any characters in between.
     pattern = r"(?i)(.{" + str(0) + "," + str(context) + r"}?" + r".*?".join(map(re.escape, words)) + r".{0," + str(context) + r"}?)"
     match = re.search(pattern, text)
     if match:
@@ -353,7 +372,6 @@ def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> Li
     results = []
     for chunk in chunks:
         original_text = chunk.get("text", "")
-        # Use the original (but normalized) text
         text_norm = ' '.join(original_text.split())
         if flexible_match(text_norm, search_term):
             snippet = extract_snippet(text_norm, search_term)
@@ -431,7 +449,6 @@ if uploaded_files and "embeddings" not in st.session_state:
     for chunk in st.session_state.chunks:
         text = chunk["text"]
         if len(text) > CHUNK_SIZE:
-            # Use overlap to ensure no terms are split across chunks.
             for i in range(0, len(text), CHUNK_SIZE - OVERLAP_SIZE):
                 sub_text = text[i:i+CHUNK_SIZE]
                 final_chunks.append({"text": sub_text, "source": chunk["source"]})
