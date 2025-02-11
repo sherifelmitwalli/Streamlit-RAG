@@ -326,40 +326,53 @@ def sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # -----------------------------
 def flexible_match(text: str, term: str) -> bool:
     """
-    Return True if all words in 'term' appear in 'text' (both normalized to lowercase with collapsed spaces).
+    Return True if all words in 'term' appear in 'text' (both normalized).
     """
     text_clean = ' '.join(text.lower().split())
     words = term.lower().split()
     return all(word in text_clean for word in words)
 
+def extract_snippet(text: str, search_term: str, context: int = 50) -> str:
+    """
+    Build a regex pattern that finds the search_term words in order with up to 'context'
+    characters on each side. Returns the matching snippet if found; otherwise, a fallback.
+    """
+    words = search_term.split()
+    # Build a pattern that looks for the words in order with any characters in between.
+    pattern = r"(?i)(.{" + str(0) + "," + str(context) + r"}?" + r".*?".join(map(re.escape, words)) + r".{0," + str(context) + r"}?)"
+    match = re.search(pattern, text)
+    if match:
+        return match.group(1).strip()
+    return text[:200].strip()  # fallback: first 200 characters
+
 def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> List[Dict[str, Any]]:
     """
-    For each chunk, split the text into sentences and return any sentence that contains all the words of the search term.
+    For each chunk, if the normalized text contains all words of the search term,
+    extract a snippet around the matching sequence.
     """
     results = []
     for chunk in chunks:
-        text = clean_text(chunk.get("text", ""))
-        # Split text into sentences (simple split on punctuation)
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        for sentence in sentences:
-            if flexible_match(sentence, search_term):
-                snippet = sentence.strip()
-                file_name = chunk["source"].get("file", "unknown file")
-                page = chunk["source"].get("page")
-                if page:
-                    page = str(page).strip()
-                    m = re.search(r'\d+', page)
-                    if m:
-                        page = m.group(0)
-                    else:
-                        page = "N/A"
+        original_text = chunk.get("text", "")
+        # Use the original (but normalized) text
+        text_norm = ' '.join(original_text.split())
+        if flexible_match(text_norm, search_term):
+            snippet = extract_snippet(text_norm, search_term)
+            file_name = chunk["source"].get("file", "unknown file")
+            page = chunk["source"].get("page")
+            if page:
+                page = str(page).strip()
+                m = re.search(r'\d+', page)
+                if m:
+                    page = m.group(0)
                 else:
                     page = "N/A"
-                results.append({
-                    "file": file_name,
-                    "page": page,
-                    "snippet": snippet
-                })
+            else:
+                page = "N/A"
+            results.append({
+                "file": file_name,
+                "page": page,
+                "snippet": snippet
+            })
     def result_sort_key(item):
         f = item.get("file", "").lower()
         p = item.get("page")
