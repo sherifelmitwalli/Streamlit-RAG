@@ -603,6 +603,10 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+if not st.session_state.get("chunks"):
+    st.warning("Please upload one or more files first.")
+    st.stop()
+
 if prompt := st.chat_input("Ask a question about the uploaded content:"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -636,7 +640,7 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     response_lines.append(f"{file_info}")
                     
                     for snippet in snippets:
-                        total_mentions += len(re.finditer(rf'\b{re.escape(search_term)}\b', snippet, re.IGNORECASE))
+                        total_mentions += len(list(re.finditer(rf'\b{re.escape(search_term)}\b', str(snippet), re.IGNORECASE)))
                         response_lines.append(f"   • {snippet}")
                 
                 summary = f"Found {total_mentions} total mention(s) of '{search_term}' across {len(exact_results)} sections:\n\n"
@@ -703,6 +707,7 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                         st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
+
 
 
 
