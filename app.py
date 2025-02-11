@@ -328,10 +328,10 @@ def extract_snippet(text: str, search_term: str, context: int = 50) -> str:
 
 def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> List[Dict[str, Any]]:
     """
-    For each chunk, if the normalized text contains the search term,
-    extract a snippet around the matching sequence.
+    For each chunk that contains the search term, extract one snippet per file and page.
+    This prevents multiple snippets from the same page when the page text was split.
     """
-    results = []
+    results = {}
     for chunk in chunks:
         original_text = chunk.get("text", "")
         text_norm = ' '.join(original_text.split())
@@ -345,20 +345,16 @@ def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> Li
                 page = m.group(0) if m else "N/A"
             else:
                 page = "N/A"
-            results.append({
-                "file": file_name,
-                "page": page,
-                "snippet": snippet
-            })
-    def result_sort_key(item):
-        f = item.get("file", "").lower()
-        p = item.get("page")
-        try:
-            p_num = int(p) if p != "N/A" and str(p).isdigit() else 0
-        except Exception:
-            p_num = 0
-        return (f, p_num)
-    return sorted(results, key=result_sort_key)
+            key = (file_name, page)
+            if key not in results:
+                results[key] = {
+                    "file": file_name,
+                    "page": page,
+                    "snippet": snippet
+                }
+    # Convert results to a sorted list.
+    sorted_results = sorted(results.values(), key=lambda x: (x["file"].lower(), int(x["page"]) if x["page"].isdigit() else 0))
+    return sorted_results
 
 # -----------------------------
 # Query Routing Function
@@ -391,7 +387,7 @@ def route_query(query: str) -> str:
             return "semantic"
     except Exception as e:
         logger.error("Error routing query: " + str(e))
-        # fallback to semantic if an error occurs
+        # Fallback to semantic if an error occurs.
         return "semantic"
 
 # -----------------------------
@@ -479,10 +475,7 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
 
     if query_type == "keyword":
         # Keyword search using normal text matching.
-        # We assume the user query contains the term to search.
-        # (Optionally, you could parse the query further to extract the search term.)
-        # Here, we simply pick the first word after 'find' or 'search for' or 'mentions'
-        # as a simple heuristic.
+        # Here we use a regex to extract the search term from the query.
         match = re.search(r'(?i)(?:find|search for|mentions?)\s+([\w\-]+)', prompt)
         if match:
             search_term = match.group(1)
@@ -503,7 +496,6 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
             st.markdown(bot_response)
     else:
         # Semantic retrieval branch using embeddings.
-        # Optionally filter by file if the query mentions a file id.
         file_match = re.search(r'file\s+([A-Za-z0-9\-]+)', prompt, re.IGNORECASE)
         if file_match:
             file_id = file_match.group(1)
