@@ -5,7 +5,7 @@ import time
 from io import BytesIO
 from typing import List, Optional, Dict, Any
 import zipfile  # For handling ZIP files
-import pdfplumber  # Added import for PDF extraction
+import pdfplumber  # For improved PDF extraction
 import pandas as pd
 import numpy as np
 from pptx import Presentation
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 CHUNK_SIZE = 500                  # Maximum characters per text chunk
-OVERLAP_SIZE = int(CHUNK_SIZE * 0.1)  # 10% overlap for splitting large chunks
+OVERLAP_SIZE = int(CHUNK_SIZE * 0.1)  # 10% overlap when splitting large chunks
 MAX_RETRIES = 3                   # Maximum number of API call retries
 RETRY_DELAY = 5                   # Delay between retries in seconds
 EMBEDDING_MODEL = "text-embedding-ada-002"
@@ -321,36 +321,45 @@ def sort_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return (file_name, page_num)
     return sorted(chunks, key=chunk_sort_key)
 
-def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str,
-                           context_words: int = 5) -> List[Dict[str, Any]]:
+# -----------------------------
+# Flexible Matching Functions
+# -----------------------------
+def flexible_match(text: str, term: str) -> bool:
     """
-    Extract all occurrences of the search_term (with a small context window)
-    from the provided chunks. This function cleans the text before matching,
-    which helps handle issues like extra whitespace or hyphenation.
+    Return True if all words in 'term' appear in 'text' (both normalized to lowercase with collapsed spaces).
     """
-    pattern = rf'((?:\S+\s+){{0,{context_words}}}{re.escape(search_term)}(?:\s+\S+){{0,{context_words}}})'
+    text_clean = ' '.join(text.lower().split())
+    words = term.lower().split()
+    return all(word in text_clean for word in words)
+
+def extract_exact_mentions(chunks: List[Dict[str, Any]], search_term: str) -> List[Dict[str, Any]]:
+    """
+    For each chunk, split the text into sentences and return any sentence that contains all the words of the search term.
+    """
     results = []
     for chunk in chunks:
-        # Clean the text before matching
         text = clean_text(chunk.get("text", ""))
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            snippet = ' '.join(match.group(0).split())  # Collapse extra whitespace/newlines
-            file_name = chunk["source"].get("file", "unknown file")
-            page = chunk["source"].get("page")
-            if page:
-                page = str(page).strip()
-                m = re.search(r'\d+', page)
-                if m:
-                    page = m.group(0)
+        # Split text into sentences (simple split on punctuation)
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        for sentence in sentences:
+            if flexible_match(sentence, search_term):
+                snippet = sentence.strip()
+                file_name = chunk["source"].get("file", "unknown file")
+                page = chunk["source"].get("page")
+                if page:
+                    page = str(page).strip()
+                    m = re.search(r'\d+', page)
+                    if m:
+                        page = m.group(0)
+                    else:
+                        page = "N/A"
                 else:
                     page = "N/A"
-            else:
-                page = "N/A"
-            results.append({
-                "file": file_name,
-                "page": page,
-                "snippet": snippet
-            })
+                results.append({
+                    "file": file_name,
+                    "page": page,
+                    "snippet": snippet
+                })
     def result_sort_key(item):
         f = item.get("file", "").lower()
         p = item.get("page")
@@ -443,11 +452,11 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
 
     # Check if the query asks for exact matches.
     if "exact match" in prompt.lower():
-        search_match = re.search(r'exact matches? of (?:the name|the word)?\s*[\'"]?(\w+)[\'"]?', prompt, re.IGNORECASE)
+        search_match = re.search(r'exact matches? of (?:the name|the word)?\s*[\'"]?(.+?)[\'"]?', prompt, re.IGNORECASE)
         if search_match:
             search_term = search_match.group(1)
         else:
-            st.error("Could not determine the search term from your query. Please include it (e.g., exact matches of the word 'mcculloch').")
+            st.error("Could not determine the search term from your query. Please include it (e.g., exact matches of the word 'Chamber of Commerce').")
             search_term = None
 
         if search_term:
@@ -511,3 +520,4 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
+
