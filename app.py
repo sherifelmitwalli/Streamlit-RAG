@@ -386,6 +386,31 @@ def generate_embeddings(text_chunks: List[str]) -> np.ndarray:
         st.error(f"Failed to generate embeddings: {str(e)}")
         return np.array([])
 
+def get_chat_response(messages: List[Dict[str, str]], retries: int = MAX_RETRIES, delay: int = RETRY_DELAY) -> Optional[str]:
+    """
+    Get response from OpenAI Chat API with retries and error handling.
+    """
+    for attempt in range(retries):
+        try:
+            response = openai.ChatCompletion.create(
+                model=MODEL_NAME,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1000
+            )
+            return response.choices[0].message["content"]
+        except openai.error.RateLimitError:
+            if attempt < retries - 1:
+                st.warning(f"Rate limit exceeded. Retrying in {delay} seconds...")
+                time.sleep(delay * (attempt + 1))  # Exponential backoff
+            else:
+                raise
+        except Exception as e:
+            logger.error(f"OpenAI API error: {e}", exc_info=True)
+            st.error("An error occurred while generating the response. Please try again later.")
+            return None
+    return None
+
 def find_relevant_context_indices(query: str, text_chunks: List[str], embeddings: np.ndarray, top_k: int = TOP_K) -> List[int]:
     """
     Find relevant context using improved similarity search.
@@ -595,6 +620,7 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
         if search_term:
             exact_results = extract_exact_mentions(st.session_state.chunks, search_term)
             if exact_results:
+                total_mentions = 0
                 response_lines = []
                 for idx, res in enumerate(exact_results, start=1):
                     snippets = res["snippets"]
@@ -602,9 +628,13 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                     if res["exact_match"]:
                         file_info += " (Exact Match)"
                     response_lines.append(f"{file_info}")
+                    
                     for snippet in snippets:
+                        total_mentions += len(re.finditer(rf'\b{re.escape(search_term)}\b', snippet, re.IGNORECASE))
                         response_lines.append(f"   • {snippet}")
-                bot_response = "\n\n".join(response_lines)
+                
+                summary = f"Found {total_mentions} total mention(s) of '{search_term}' across {len(exact_results)} sections:\n\n"
+                bot_response = summary + "\n\n".join(response_lines)
             else:
                 bot_response = "No matches found."
             st.session_state.messages.append({"role": "assistant", "content": bot_response})
@@ -667,5 +697,6 @@ if prompt := st.chat_input("Ask a question about the uploaded content:"):
                         st.markdown(bot_response)
 else:
     st.warning("Please upload file(s) and wait for embeddings to be generated before asking questions.")
+
 
 
